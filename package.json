@@ -1,0 +1,18 @@
+{
+  "name": "world-cup-2026-tracker",
+  "version": "1.0.0",
+  "description": "World Cup 2026 LLM prediction tracker",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "backfill": "node src/backfill.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
