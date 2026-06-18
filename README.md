@@ -1,1 +1,1 @@
-# world-cup-2026-tracker
+# the-var-council
