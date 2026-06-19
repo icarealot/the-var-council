@@ -644,9 +644,9 @@ function renderPage({ matches, syncError }) {
           seg('vb-away', counts.away) +
         '</div>' +
         '<div class="vote-bar-legend">' +
-          '<span><span class="vbl-dot home"></span>' + esc(home) + ' Win</span>' +
+          '<span><span class="vbl-dot home"></span>' + esc(home) + '</span>' +
           '<span><span class="vbl-dot draw"></span>Draw</span>' +
-          '<span><span class="vbl-dot away"></span>' + esc(away) + ' Win</span>' +
+          '<span><span class="vbl-dot away"></span>' + esc(away) + '</span>' +
         '</div>' +
       '</div>';
     }
@@ -655,7 +655,7 @@ function renderPage({ matches, syncError }) {
       var actualResult = deriveResult(match);
 
       var bubbles = predictions.slice()
-        .sort(function (a, b) { return a.model_name.localeCompare(b.model_name); })
+        .sort(function (a, b) { return (a.order_index || 0) - (b.order_index || 0); })
         .map(function (p, i) {
           var side = i % 2 === 0 ? 'left' : 'right';
           var isCorrect = actualResult && !p.failed && p.pick === actualResult;
@@ -690,7 +690,7 @@ function renderPage({ matches, syncError }) {
       area.innerHTML =
         '<div class="spinner-wrap">' +
           '<div class="spinner"></div>' +
-          '<p class="spinner-msg">' + (generating ? 'Asking 8 AI models — this takes 10–30 seconds…' : 'Loading predictions…') + '</p>' +
+          '<p class="spinner-msg">' + (generating ? 'Models are debating — this takes up to 2 minutes…' : 'Loading predictions…') + '</p>' +
         '</div>';
     }
 
@@ -966,7 +966,7 @@ app.get('/api/predictions/:matchId', async (req, res) => {
 
   try {
     const [predResult, matchResult] = await Promise.all([
-      db.execute({ sql: 'SELECT * FROM predictions WHERE match_id = ?', args: [matchId] }),
+      db.execute({ sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC', args: [matchId] }),
       db.execute({ sql: 'SELECT id, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
     if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });

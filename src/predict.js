@@ -13,66 +13,78 @@ const MODELS = [
   { name: 'gpt-5.5',           apiId: 'gpt-5.5',            endpoint: 'responses' },
 ];
 
-function buildPrompt(match) {
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function buildBaseSection(match) {
   const home = match.home_team || match.home_team_label || 'Home';
   const away = match.away_team || match.away_team_label || 'Away';
-  const isKnockout = match.type !== 'group';
-
-  const pickOptions = isKnockout
-    ? '"home" or "away" (knockout match — no draw possible)'
-    : '"home", "draw", or "away"';
-
   const stage = match.stage_group || match.type || 'Unknown';
   const venue = match.stadium_name
     ? `${match.stadium_name}, ${match.stadium_city || ''}`
     : 'Unknown venue';
 
-  return `You are an expert sports analytics AI specializing in predictive football (soccer) modeling. Your task is to calculate the most statistically probable outcome for an upcoming 2026 FIFA World Cup match.
+  return `**Match:** ${home} vs. ${away} | **Stage:** ${stage} | **Venue:** ${venue}`;
+}
 
-### MATCH PROFILE
-* **Fixture:** ${home} vs. ${away}
-* **Stage:** ${stage}
-* **Venue & Location:** ${venue}
-* **External Conditions:** Use your best knowledge of typical weather, altitude, and travel distances for this venue and these teams.
+function buildOpenerPrompt(match) {
+  const home = match.home_team || match.home_team_label || 'Home';
+  const away = match.away_team || match.away_team_label || 'Away';
+  const isKnockout = match.type !== 'group';
+  const pickOptions = isKnockout
+    ? '"home" or "away" (knockout match — no draw possible)'
+    : '"home", "draw", or "away"';
 
-### TEAM A PROFILE (${home})
-* **FIFA Ranking:** Use your best knowledge.
-* **Recent Form (Last 5 matches):** Use your best knowledge.
-* **Expected Goals (xG) Trend:** Use your best knowledge.
-* **Key Injuries/Suspensions:** Use your best knowledge.
-* **Tactical Setup:** Use your best knowledge.
-* **Tournament Motivation Scenario:** Use your best knowledge based on the stage and group standings context.
+  return `You are the first of eight AI models predicting this 2026 FIFA World Cup match. Make a bold, confident opening statement. Be opinionated and entertaining — but keep it to 2-3 sentences max.
 
-### TEAM B PROFILE (${away})
-* **FIFA Ranking:** Use your best knowledge.
-* **Recent Form (Last 5 matches):** Use your best knowledge.
-* **Expected Goals (xG) Trend:** Use your best knowledge.
-* **Key Injuries/Suspensions:** Use your best knowledge.
-* **Tactical Setup:** Use your best knowledge.
-* **Tournament Motivation Scenario:** Use your best knowledge based on the stage and group standings context.
-
-### HISTORICAL & CONTEXTUAL DATA
-* **Head-to-Head Record (Last 5 years):** Use your best knowledge.
-* **Historical performance under similar tournament pressure:** Use your best knowledge.
-
-### INSTRUCTIONS
-Analyze the tactical matchup (how ${home}'s attack pairs against ${away}'s defensive shape), the physical impact of travel and altitude, and the motivation dynamics based on the 2026 48-team group permutations.${isKnockout ? ' This is a knockout match — there is no draw.' : ''}
+${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
 
 Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
 {
   "pick": ${pickOptions},
-  "reasoning": "your 1-2 sentence tactical justification"
+  "reasoning": "your 2-3 sentence opening take"
+}`;
+}
+
+function buildDebatePrompt(match, priorContext) {
+  const home = match.home_team || match.home_team_label || 'Home';
+  const away = match.away_team || match.away_team_label || 'Away';
+  const isKnockout = match.type !== 'group';
+  const pickOptions = isKnockout
+    ? '"home" or "away" (knockout match — no draw possible)'
+    : '"home", "draw", or "away"';
+
+  const contextBlock = priorContext.map((entry, i) => {
+    if (entry.failed) {
+      return `${i + 1}. [${entry.modelName} crashed and couldn't form an opinion. A technical disaster of historic proportions. Pour one out.]`;
+    }
+    return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
+  }).join('\n\n');
+
+  return `You are one of eight AI models predicting this 2026 FIFA World Cup match. React to what the others said in 2-3 sentences — funny, opinionated, conversational. Agree, disagree, or roast them. Be brief.
+
+${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
+
+### THE COUNCIL SO FAR
+${contextBlock}
+
+Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
+{
+  "pick": ${pickOptions},
+  "reasoning": "your 2-3 sentence reaction"
 }`;
 }
 
 function parseResponse(text) {
   const clean = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
 
-  // Try direct parse first (handles well-formed model responses).
   try { return JSON.parse(clean); } catch (_) {}
 
-  // Walk backward from the last } to find the outermost valid JSON object,
-  // skipping any trailing fragments like {see stats} that break greedy matching.
   const start = clean.indexOf('{');
   if (start === -1) throw new Error('No JSON object found in response');
   let end = clean.lastIndexOf('}');
@@ -111,7 +123,7 @@ async function callAnthropic(model, prompt) {
     },
     body: JSON.stringify({
       model: model.apiId,
-      max_tokens: 512,
+      max_tokens: 300,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -206,47 +218,49 @@ async function getPredictions(matchId) {
   const match = matchResult.rows[0];
 
   const existingResult = await db.execute({
-    sql: 'SELECT * FROM predictions WHERE match_id = ?',
+    sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC',
     args: [matchId],
   });
 
-  const existingByModel = {};
-  for (const row of existingResult.rows) {
-    existingByModel[row.model_name] = row;
+  // All 8 predictions already cached — return them
+  if (existingResult.rows.length >= MODELS.length) return existingResult.rows;
+
+  // Partial chain can't be resumed without prior debate context — wipe and restart
+  if (existingResult.rows.length > 0) {
+    await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
-  const missing = MODELS.filter((m) => !existingByModel[m.name]);
-  if (missing.length === 0) return existingResult.rows;
-
   const isKnockout = match.type !== 'group';
-  const prompt = buildPrompt(match);
+  const shuffled = shuffleArray([...MODELS]);
+  const debateContext = [];
 
-  const results = await Promise.all(
-    missing.map(async (model) => {
-      const result = await callWithRetry(model, prompt, isKnockout);
-      return { model, result };
-    })
-  );
+  for (let i = 0; i < shuffled.length; i++) {
+    const model = shuffled[i];
+    const prompt = i === 0
+      ? buildOpenerPrompt(match)
+      : buildDebatePrompt(match, debateContext);
 
-  const now = new Date().toISOString();
-  // Single round-trip for all inserts. Overwrite a prior failed record only when
-  // the new result succeeded — preserves a successful record against a losing race.
-  await db.batch(
-    results.map(({ model, result }) => ({
-      sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, predicted_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+    const result = await callWithRetry(model, prompt, isKnockout);
+
+    await db.execute({
+      sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id, model_name) DO UPDATE SET
               pick         = excluded.pick,
               reasoning    = excluded.reasoning,
               failed       = excluded.failed,
+              order_index  = excluded.order_index,
               predicted_at = excluded.predicted_at
             WHERE excluded.failed = 0`,
-      args: [matchId, model.name, result.pick, result.reasoning, result.failed ? 1 : 0, now],
-    }))
-  );
+      args: [matchId, model.name, result.pick, result.reasoning, result.failed ? 1 : 0, i, new Date().toISOString()],
+    });
+
+    debateContext.push({ modelName: model.name, pick: result.pick, reasoning: result.reasoning, failed: result.failed });
+    console.log(`[predict] match ${matchId} — ${model.name} (${i + 1}/${shuffled.length}) pick=${result.pick || 'FAILED'}`);
+  }
 
   const allResult = await db.execute({
-    sql: 'SELECT * FROM predictions WHERE match_id = ?',
+    sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC',
     args: [matchId],
   });
   return allResult.rows;

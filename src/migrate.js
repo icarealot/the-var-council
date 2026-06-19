@@ -37,10 +37,24 @@ async function migrate() {
       pick         TEXT    CHECK (pick IN ('home', 'draw', 'away')),
       reasoning    TEXT,
       failed       INTEGER NOT NULL DEFAULT 0,
+      order_index  INTEGER,
       predicted_at TEXT    NOT NULL,
       UNIQUE (match_id, model_name)
     )`,
   ]);
+
+  // Add order_index to existing predictions tables and wipe rows for debate format regeneration.
+  // Only deletes when the column is newly added so restarts don't clear data.
+  let columnAdded = false;
+  try {
+    await db.execute(`ALTER TABLE predictions ADD COLUMN order_index INTEGER`);
+    columnAdded = true;
+  } catch (e) {
+    if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+  }
+  if (columnAdded) {
+    await db.execute(`DELETE FROM predictions`);
+  }
 }
 
 module.exports = migrate;
