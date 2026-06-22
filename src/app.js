@@ -587,6 +587,7 @@ function renderPage({ matches, syncError }) {
   <nav class="page-nav">
     <a href="/" class="active">Predictions</a>
     <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables">Tables</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -1085,6 +1086,16 @@ app.get('/leaderboard', (_req, res) => {
   res.send(renderLeaderboardPage());
 });
 
+app.get('/tables', async (_req, res) => {
+  try {
+    const groups = await computeGroupStandings();
+    res.send(renderTablesPage(groups));
+  } catch (err) {
+    console.error('Tables error:', err);
+    res.status(500).send('Error loading tables');
+  }
+});
+
 app.get('/api/leaderboard', async (_req, res) => {
   try {
     const result = await db.execute(`
@@ -1347,6 +1358,7 @@ function renderLeaderboardPage() {
   <nav class="page-nav">
     <a href="/">Predictions</a>
     <a href="/leaderboard" class="active">Leaderboard</a>
+    <a href="/tables">Tables</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -1414,6 +1426,371 @@ function renderLeaderboardPage() {
       document.getElementById('lb-container').innerHTML = '<div class="spinner-wrap"><p class="spinner-msg">Failed to load leaderboard.</p></div>';
     });
 </script>
+</body>
+</html>`;
+}
+
+async function computeGroupStandings() {
+  const result = await db.execute(
+    "SELECT home_team, away_team, home_team_id, away_team_id, home_score, away_score, finished, stage_group, local_date_ict FROM matches WHERE type = 'group' ORDER BY local_date_ict ASC"
+  );
+
+  const groups = new Map();
+
+  for (const m of result.rows) {
+    const g = m.stage_group;
+    if (!groups.has(g)) groups.set(g, new Map());
+    const gm = groups.get(g);
+    const home = m.home_team;
+    const away = m.away_team;
+    if (home && m.home_team_id !== '0' && !gm.has(home))
+      gm.set(home, { mp: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, results: [] });
+    if (away && m.away_team_id !== '0' && !gm.has(away))
+      gm.set(away, { mp: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, results: [] });
+  }
+
+  for (const m of result.rows) {
+    if (!m.finished || m.home_score === null || m.away_score === null) continue;
+    const home = m.home_team;
+    const away = m.away_team;
+    if (!home || !away) continue;
+    const gm = groups.get(m.stage_group);
+    if (!gm) continue;
+    const hs = gm.get(home);
+    const as_ = gm.get(away);
+    if (!hs || !as_) continue;
+    const h = Number(m.home_score);
+    const a = Number(m.away_score);
+    hs.mp++; as_.mp++;
+    hs.gf += h; hs.ga += a;
+    as_.gf += a; as_.ga += h;
+    if (h > a) {
+      hs.w++; as_.l++;
+      hs.results.push('w'); as_.results.push('l');
+    } else if (h < a) {
+      hs.l++; as_.w++;
+      hs.results.push('l'); as_.results.push('w');
+    } else {
+      hs.d++; as_.d++;
+      hs.results.push('d'); as_.results.push('d');
+    }
+  }
+
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([letter, gm]) => {
+      const teams = [...gm.entries()]
+        .map(([name, s]) => {
+          const gd = s.gf - s.ga;
+          const pts = s.w * 3 + s.d;
+          const raw = s.results.slice(-3);
+          const last3 = [...raw, null, null, null].slice(0, 3);
+          return { name, mp: s.mp, w: s.w, d: s.d, l: s.l, gf: s.gf, ga: s.ga, gd, pts, last3 };
+        })
+        .sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+      return { name: 'Group ' + letter, teams };
+    });
+}
+
+function renderTablesPage(groups) {
+  function ri(r) {
+    if (r === 'w') return '<span class="ri ri-w">✓</span>';
+    if (r === 'l') return '<span class="ri ri-l">✕</span>';
+    if (r === 'd') return '<span class="ri ri-d">−</span>';
+    return '<span class="ri ri-n">?</span>';
+  }
+
+  function gSign(n) {
+    return n > 0 ? '+' + n : String(n);
+  }
+
+  const groupCards = groups.map(({ name, teams }) => {
+    const rows = teams.map((t, i) => {
+      const flag = TEAM_FLAGS[t.name] || '';
+      const last3html = t.last3.map(ri).join('');
+      return `<tr>
+            <td class="gt-rank">${i + 1}</td>
+            <td class="gt-team">${flag ? flag + ' ' : ''}${escHtml(t.name)}</td>
+            <td class="gt-num">${t.mp}</td>
+            <td class="gt-num">${t.w}</td>
+            <td class="gt-num">${t.d}</td>
+            <td class="gt-num">${t.l}</td>
+            <td class="gt-num">${t.gf}</td>
+            <td class="gt-num">${t.ga}</td>
+            <td class="gt-num">${gSign(t.gd)}</td>
+            <td class="gt-pts">${t.pts}</td>
+            <td class="gt-last3">${last3html}</td>
+          </tr>`;
+    }).join('');
+
+    return `<div class="group-card">
+      <div class="group-card-header">${escHtml(name)}</div>
+      <div class="group-table-wrap">
+        <table class="group-table">
+          <thead><tr>
+            <th class="gt-rank"></th>
+            <th class="gt-team">Team</th>
+            <th class="gt-num">MP</th>
+            <th class="gt-num">W</th>
+            <th class="gt-num">D</th>
+            <th class="gt-num">L</th>
+            <th class="gt-num">GF</th>
+            <th class="gt-num">GA</th>
+            <th class="gt-num">GD</th>
+            <th class="gt-pts">Pts</th>
+            <th class="gt-last3">Last 3</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Var Council — Tables</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0F172A;
+      --surface:     #1E293B;
+      --surface-2:   #273549;
+      --border:      #334155;
+      --accent:      #38BDF8;
+      --accent-dim:  rgba(56, 189, 248, 0.15);
+      --text:        #F1F5F9;
+      --text-muted:  #94A3B8;
+      --radius:      10px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Space Grotesk', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 20px 80px;
+    }
+
+    .site-header {
+      width: 100%;
+      max-width: 740px;
+      margin-bottom: 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .site-header .eyebrow {
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .site-header h1 {
+      font-size: clamp(28px, 5vw, 42px);
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+
+    .site-header h1 em { font-style: normal; color: var(--accent); }
+
+    .site-header .subtitle {
+      font-size: 14px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .page-nav {
+      width: 100%;
+      max-width: 740px;
+      margin-bottom: 32px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .page-nav a {
+      display: inline-flex;
+      align-items: center;
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 8px 14px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+
+    .page-nav a:hover { background: var(--accent-dim); }
+    .page-nav a.active { background: var(--accent); color: #0F172A; }
+
+    /* ── Groups grid ── */
+    .groups-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+
+    @media (min-width: 700px) {
+      .groups-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+
+
+    /* ── Group card ── */
+    .group-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .group-card-header {
+      padding: 12px 16px;
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .group-table-wrap { overflow-x: auto; }
+
+    /* ── Group table ── */
+    .group-table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .group-table thead th {
+      padding: 8px 6px;
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .group-table tbody td {
+      padding: 10px 6px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    .group-table tbody tr:last-child td { border-bottom: none; }
+
+    .gt-rank {
+      text-align: center;
+      width: 28px;
+      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+    }
+
+    .gt-team {
+      text-align: left;
+      padding-left: 10px !important;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .gt-num {
+      text-align: center;
+      width: 30px;
+      font-family: 'Space Mono', monospace;
+      color: var(--text-muted);
+    }
+
+    .gt-pts {
+      text-align: center;
+      width: 32px;
+      font-family: 'Space Mono', monospace;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .gt-last3 {
+      text-align: right;
+      width: 76px;
+      padding-right: 12px !important;
+    }
+
+    .group-table thead th.gt-rank,
+    .group-table thead th.gt-num,
+    .group-table thead th.gt-pts { text-align: center; }
+
+    .group-table thead th.gt-team { text-align: left; padding-left: 10px; }
+    .group-table thead th.gt-last3 { text-align: right; padding-right: 12px; }
+
+    /* ── Result icons ── */
+    .ri {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: 'Space Mono', monospace;
+    }
+
+    .ri + .ri { margin-left: 4px; }
+
+    .ri-w { color: #22C55E; }
+    .ri-l { color: #EF4444; }
+    .ri-d { color: #64748B; }
+    .ri-n { color: #475569; }
+
+    @media (max-width: 600px) {
+      body { padding: 28px 14px 60px; }
+      .site-header { margin-bottom: 32px; }
+      .site-header .subtitle { font-size: 13px; }
+      .page-nav { margin-bottom: 18px; }
+      .group-table { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="eyebrow">THE VAR COUNCIL</p>
+    <h1><em>Tables</em></h1>
+    <p class="subtitle">World Cup 2026 group stage standings.</p>
+  </header>
+
+  <nav class="page-nav">
+    <a href="/">Predictions</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables" class="active">Tables</a>
+  </nav>
+
+  <main style="width:100%;max-width:1280px;">
+    <div class="groups-grid">
+      ${groupCards}
+    </div>
+  </main>
 </body>
 </html>`;
 }
