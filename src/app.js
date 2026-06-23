@@ -719,8 +719,12 @@ function renderPage({ matches, syncError }) {
             ? '<span class="bubble-reason" style="font-style:italic">Prediction unavailable</span>'
             : '<span class="bubble-reason">' + esc(p.reasoning || '') + '</span>';
 
+          var historyHtml = (p.history && p.history.length > 0)
+            ? ' | <span class="model-history">' + p.history.map(function(h) { return h === 'correct' ? '✓' : '✗'; }).join('') + '</span>'
+            : '';
+
           return '<div class="chat-row ' + side + '">' +
-            '<div class="chat-sender">' + modelIcon(p.model_name) + esc(p.model_name) + '</div>' +
+            '<div class="chat-sender">' + modelIcon(p.model_name) + esc(p.model_name) + historyHtml + '</div>' +
             '<div class="chat-bubble">' +
               badgeHtml +
               reasonHtml +
@@ -1065,6 +1069,40 @@ app.get('/', async (req, res) => {
   }
 });
 
+async function attachHistory(predictions, matchId) {
+  const historyResult = await db.execute({
+    sql: `SELECT p.model_name, p.pick, p.failed, m.home_score, m.away_score
+          FROM predictions p
+          JOIN matches m ON p.match_id = m.id
+          WHERE m.finished = 1
+            AND m.local_date_ict < (SELECT local_date_ict FROM matches WHERE id = ?)
+          ORDER BY m.local_date_ict DESC`,
+    args: [matchId],
+  });
+  const historyByModel = {};
+  for (const row of historyResult.rows) {
+    const name = row.model_name;
+    if (!historyByModel[name]) historyByModel[name] = [];
+    if (historyByModel[name].length >= 5) continue;
+    let status;
+    if (row.failed) {
+      status = 'failed';
+    } else {
+      let actual;
+      if (row.home_score > row.away_score) actual = 'home';
+      else if (row.away_score > row.home_score) actual = 'away';
+      else actual = 'draw';
+      status = row.pick === actual ? 'correct' : 'wrong';
+    }
+    historyByModel[name].push(status);
+  }
+  return predictions.map(p => ({
+    id: p.id, match_id: p.match_id, model_name: p.model_name, pick: p.pick,
+    reasoning: p.reasoning, failed: p.failed, order_index: p.order_index,
+    predicted_at: p.predicted_at, history: (historyByModel[p.model_name] || []).reverse(),
+  }));
+}
+
 app.get('/api/predictions/:matchId', async (req, res) => {
   const matchId = parseInt(req.params.matchId, 10);
   if (isNaN(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
@@ -1075,7 +1113,8 @@ app.get('/api/predictions/:matchId', async (req, res) => {
       db.execute({ sql: 'SELECT id, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
     if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });
-    res.json({ predictions: predResult.rows, match: matchResult.rows[0] || null });
+    const predictions = await attachHistory(predResult.rows, matchId);
+    res.json({ predictions, match: matchResult.rows[0] || null });
   } catch (err) {
     console.error('DB error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1824,7 +1863,8 @@ app.post('/api/predict/:matchId', async (req, res) => {
     if (!inFlight.has(matchId)) {
       inFlight.set(matchId, getPredictions(matchId).finally(() => inFlight.delete(matchId)));
     }
-    const predictions = await inFlight.get(matchId);
+    const raw = await inFlight.get(matchId);
+    const predictions = await attachHistory(raw, matchId);
     res.json({ predictions, match });
   } catch (err) {
     console.error('Prediction error:', err);
