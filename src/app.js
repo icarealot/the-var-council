@@ -597,7 +597,7 @@ function renderPage({ matches, syncError }) {
       <label for="match-select">Select a match</label>
       <div class="select-wrapper">
         <select id="match-select">
-          <option value="" disabled selected>— choose a match —</option>
+          <option value="" selected>— choose a match —</option>
           ${options}
         </select>
       </div>
@@ -781,6 +781,7 @@ function renderPage({ matches, syncError }) {
     sel.addEventListener('change', function () {
       var opt     = sel.options[sel.selectedIndex];
       var matchId = sel.value;
+      if (!matchId) return;
       var home    = (opt.dataset && opt.dataset.home) || 'Home';
       var away    = (opt.dataset && opt.dataset.away) || 'Away';
       showSpinner(false);
@@ -1724,6 +1725,7 @@ function renderTablesPage(groups) {
     /* ── Group table ── */
     .group-table {
       width: 100%;
+      min-width: 440px;
       table-layout: fixed;
       border-collapse: collapse;
       font-size: 13px;
@@ -1744,7 +1746,6 @@ function renderTablesPage(groups) {
     .group-table tbody td {
       padding: 10px 6px;
       border-bottom: 1px solid var(--border);
-      white-space: nowrap;
       vertical-align: middle;
     }
 
@@ -1753,6 +1754,7 @@ function renderTablesPage(groups) {
     .gt-rank {
       text-align: center;
       width: 28px;
+      white-space: nowrap;
       color: var(--text-muted);
       font-family: 'Space Mono', monospace;
       font-size: 11px;
@@ -1768,6 +1770,7 @@ function renderTablesPage(groups) {
     .gt-num {
       text-align: center;
       width: 30px;
+      white-space: nowrap;
       font-family: 'Space Mono', monospace;
       color: var(--text-muted);
     }
@@ -1775,6 +1778,7 @@ function renderTablesPage(groups) {
     .gt-pts {
       text-align: center;
       width: 32px;
+      white-space: nowrap;
       font-family: 'Space Mono', monospace;
       font-weight: 700;
       color: var(--text);
@@ -1783,6 +1787,7 @@ function renderTablesPage(groups) {
     .gt-last3 {
       text-align: right;
       width: 76px;
+      white-space: nowrap;
       padding-right: 12px !important;
     }
 
