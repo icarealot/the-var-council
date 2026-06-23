@@ -756,12 +756,8 @@ function renderPage({ matches, syncError }) {
             ? '<span class="bubble-reason" style="font-style:italic">Prediction unavailable</span>'
             : '<span class="bubble-reason">' + esc(p.reasoning || '') + '</span>';
 
-          var historyHtml = (p.history && p.history.length > 0)
-            ? ' | <span class="model-history">' + p.history.map(function(h) { return h === 'correct' ? '✓' : '✗'; }).join('') + '</span>'
-            : '';
-
           return '<div class="chat-row ' + side + '">' +
-            '<div class="chat-sender">' + modelIcon(p.model_name) + esc(p.model_name) + historyHtml + '</div>' +
+            '<div class="chat-sender">' + modelIcon(p.model_name) + esc(p.model_name) + '</div>' +
             '<div class="chat-bubble">' +
               badgeHtml +
               reasonHtml +
