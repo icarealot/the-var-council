@@ -35,6 +35,18 @@ function flagImg(code) {
 }
 
 
+// Pricing from opencode.ai/docs/zen — $ per 1M tokens
+const PRICING = {
+  'minimax-m2.7':      { input: 0.30,  output: 1.20  },
+  'glm-5.1':           { input: 1.40,  output: 4.40  },
+  'kimi-k2.6':         { input: 0.95,  output: 4.00  },
+  'qwen3.6-plus':      { input: 0.50,  output: 3.00  },
+  'deepseek-v4-flash': { input: 0.14,  output: 0.28  },
+  'claude-opus-4-8':   { input: 5.00,  output: 25.00 },
+  'gemini-3.1-pro':    { input: 2.00,  output: 12.00 },
+  'gpt-5.5':           { input: 5.00,  output: 30.00 },
+};
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -1225,14 +1237,21 @@ app.get('/api/leaderboard', async (_req, res) => {
               )
             THEN 1 ELSE 0
           END
-        ) AS correct
+        ) AS correct,
+        SUM(COALESCE(p.input_tokens, 0)) AS total_input_tokens,
+        SUM(COALESCE(p.output_tokens, 0)) AS total_output_tokens
       FROM predictions p
       JOIN matches m ON p.match_id = m.id
       WHERE m.finished = 1
       GROUP BY p.model_name
       ORDER BY correct DESC, p.model_name ASC
     `);
-    res.json({ rows: result.rows });
+    const rows = result.rows.map(row => {
+      const price = PRICING[row.model_name] || { input: 0, output: 0 };
+      const cost = (Number(row.total_input_tokens) * price.input + Number(row.total_output_tokens) * price.output) / 1_000_000;
+      return { ...row, cost };
+    });
+    res.json({ rows });
   } catch (err) {
     console.error('Leaderboard DB error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1433,6 +1452,20 @@ function renderLeaderboardPage() {
       .model-name { font-size: 11px; word-break: break-word; }
     }
 
+    .lb-footer td {
+      border-top: 2px solid var(--border);
+      padding: 12px 16px;
+    }
+
+    .lb-footer-label {
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
     .spinner-wrap {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -1518,20 +1551,32 @@ function renderLeaderboardPage() {
           ? ((r.correct / r.matches_predicted) * 100).toFixed(1)
           : '0.0';
         const name = r.model_name.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const cost = '~$' + (r.cost || 0).toFixed(4);
         return \`<tr>
           <td class="rank-cell">\${i + 1}</td>
           <td><span class="model-name">\${modelIcon(r.model_name)}\${name}</span></td>
           <td class="num-cell">\${r.correct}</td>
           <td class="num-cell">\${r.matches_predicted}</td>
           <td class="num-cell">\${acc}%</td>
+          <td class="num-cell">\${cost}</td>
         </tr>\`;
       }).join('');
+      const totalCost = rows.reduce((sum, r) => sum + (r.cost || 0), 0);
+      const footerRow = \`<tr class="lb-footer">
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td class="num-cell">~$\${totalCost.toFixed(4)}</td>
+      </tr>\`;
       container.innerHTML = \`<div class="lb-wrap">
         <table class="lb-table">
           <thead><tr>
-            <th>Rank</th><th>Model</th><th>Correct</th><th>Predicted</th><th>Accuracy</th>
+            <th>Rank</th><th>Model</th><th>Correct</th><th>Predicted</th><th>Accuracy</th><th>Cost</th>
           </tr></thead>
           <tbody>\${bodyRows}</tbody>
+          <tfoot>\${footerRow}</tfoot>
         </table>
       </div>\`;
     })

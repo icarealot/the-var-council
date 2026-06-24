@@ -55,6 +55,14 @@ async function migrate() {
   if (columnAdded) {
     await db.execute(`DELETE FROM predictions`);
   }
+
+  for (const col of ['input_tokens', 'output_tokens']) {
+    try {
+      await db.execute(`ALTER TABLE predictions ADD COLUMN ${col} INTEGER`);
+    } catch (e) {
+      if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+    }
+  }
 }
 
 module.exports = migrate;
