@@ -9,8 +9,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "backfill": "node src/backfill.js",
-    "test": "node --test src/**/*.test.js"
+    "backfill": "node src/backfill.js"
   },
   "dependencies": {
     "@libsql/client": "^0.14.0",

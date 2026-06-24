@@ -34,15 +34,6 @@ function flagImg(code) {
   return `<img src="https://flagcdn.com/w20/${code}.png" alt="" style="height:15px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">`;
 }
 
-function teamWithFlag(name) {
-  const code = TEAM_FLAGS[name];
-  return code ? `${flagImg(code)} ${name}` : name;
-}
-
-function teamWithFlagAfter(name) {
-  const code = TEAM_FLAGS[name];
-  return code ? `${name} ${flagImg(code)}` : name;
-}
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -646,7 +637,7 @@ function renderPage({ matches, syncError }) {
 
   <script>
   (function () {
-    var MATCH_DATA = ${JSON.stringify(matchData)};
+    var MATCH_DATA = ${JSON.stringify(matchData).replace(/<\//g, '<\\/')};
 
     var navArea   = document.getElementById('nav-area');
     var matchArea = document.getElementById('match-area');
@@ -880,6 +871,7 @@ function renderPage({ matches, syncError }) {
       activeMatchId = String(matchId);
       navArea.innerHTML = '<button class="back-btn">← ' + esc(shortLabel) + '</button>';
       navArea.querySelector('.back-btn').addEventListener('click', function () {
+        activeMatchId = null;
         navArea.innerHTML = renderDateStrip();
         attachChipListeners();
         hint.style.display = '';
@@ -1183,39 +1175,6 @@ app.get('/', async (req, res) => {
   }
 });
 
-async function attachHistory(predictions, matchId) {
-  const historyResult = await db.execute({
-    sql: `SELECT p.model_name, p.pick, p.failed, m.home_score, m.away_score
-          FROM predictions p
-          JOIN matches m ON p.match_id = m.id
-          WHERE m.finished = 1
-            AND m.local_date_ict < (SELECT local_date_ict FROM matches WHERE id = ?)
-          ORDER BY m.local_date_ict DESC`,
-    args: [matchId],
-  });
-  const historyByModel = {};
-  for (const row of historyResult.rows) {
-    const name = row.model_name;
-    if (!historyByModel[name]) historyByModel[name] = [];
-    if (historyByModel[name].length >= 5) continue;
-    let status;
-    if (row.failed) {
-      status = 'failed';
-    } else {
-      let actual;
-      if (row.home_score > row.away_score) actual = 'home';
-      else if (row.away_score > row.home_score) actual = 'away';
-      else actual = 'draw';
-      status = row.pick === actual ? 'correct' : 'wrong';
-    }
-    historyByModel[name].push(status);
-  }
-  return predictions.map(p => ({
-    id: p.id, match_id: p.match_id, model_name: p.model_name, pick: p.pick,
-    reasoning: p.reasoning, failed: p.failed, order_index: p.order_index,
-    predicted_at: p.predicted_at, history: (historyByModel[p.model_name] || []).reverse(),
-  }));
-}
 
 app.get('/api/predictions/:matchId', async (req, res) => {
   const matchId = parseInt(req.params.matchId, 10);
@@ -1227,8 +1186,7 @@ app.get('/api/predictions/:matchId', async (req, res) => {
       db.execute({ sql: 'SELECT id, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
     if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });
-    const predictions = await attachHistory(predResult.rows, matchId);
-    res.json({ predictions, match: matchResult.rows[0] || null });
+    res.json({ predictions: predResult.rows, match: matchResult.rows[0] || null });
   } catch (err) {
     console.error('DB error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -2283,8 +2241,7 @@ app.post('/api/predict/:matchId', async (req, res) => {
       inFlight.set(matchId, getPredictions(matchId).finally(() => inFlight.delete(matchId)));
     }
     const raw = await inFlight.get(matchId);
-    const predictions = await attachHistory(raw, matchId);
-    res.json({ predictions, match });
+    res.json({ predictions: raw, match });
   } catch (err) {
     console.error('Prediction error:', err);
     res.status(500).json({ error: 'Internal server error' });
