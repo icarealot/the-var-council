@@ -1659,6 +1659,10 @@ function renderTablesPage(groups) {
     return n > 0 ? '+' + n : String(n);
   }
 
+  const groupStrip = `<div class="group-strip">
+    ${groups.map((g, i) => `<button class="group-chip${i === 0 ? ' active' : ''}" data-group="${escHtml(g.name)}">${escHtml(g.name)}</button>`).join('')}
+  </div>`;
+
   const groupCards = groups.map(({ name, teams }) => {
     const rows = teams.map((t, i) => {
       const flag = TEAM_FLAGS[t.name] ? flagImg(TEAM_FLAGS[t.name]) : '';
@@ -1678,7 +1682,7 @@ function renderTablesPage(groups) {
           </tr>`;
     }).join('');
 
-    return `<div class="group-card">
+    return `<div class="group-card" data-group="${escHtml(name)}">
       <div class="group-card-header">${escHtml(name)}</div>
       <div class="group-table-wrap">
         <table class="group-table">
@@ -1798,16 +1802,42 @@ function renderTablesPage(groups) {
     .page-nav a:hover { background: var(--accent-dim); }
     .page-nav a.active { background: var(--accent); color: #0F172A; }
 
+    /* ── Group strip ── */
+    .group-strip {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      margin-bottom: 16px;
+    }
+    .group-strip::-webkit-scrollbar { display: none; }
+
+    .group-chip {
+      flex-shrink: 0;
+      padding: 8px 16px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      letter-spacing: 0.04em;
+      transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+    .group-chip:hover { border-color: var(--accent); color: var(--text); }
+    .group-chip.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+
     /* ── Groups grid ── */
     .groups-grid {
       width: 100%;
       display: grid;
       grid-template-columns: 1fr;
       gap: 16px;
-    }
-
-    @media (min-width: 700px) {
-      .groups-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
 
@@ -1947,11 +1977,24 @@ function renderTablesPage(groups) {
     <a href="/knockout">Knockout</a>
   </nav>
 
-  <main style="width:100%;max-width:1280px;">
+  <main style="width:100%;max-width:740px;">
+    ${groupStrip}
     <div class="groups-grid">
       ${groupCards}
     </div>
   </main>
+  <script>
+    (function () {
+      var chips = document.querySelectorAll('.group-chip');
+      var cards = document.querySelectorAll('.group-card');
+      function showGroup(name) {
+        chips.forEach(function (c) { c.classList.toggle('active', c.dataset.group === name); });
+        cards.forEach(function (c) { c.style.display = c.dataset.group === name ? '' : 'none'; });
+      }
+      chips.forEach(function (c) { c.addEventListener('click', function () { showGroup(c.dataset.group); }); });
+      if (chips.length) showGroup(chips[0].dataset.group);
+    })();
+  </script>
 </body>
 </html>`;
 }
