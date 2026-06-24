@@ -9,35 +9,39 @@ app.use(express.json());
 app.use('/icons', express.static(path.join(__dirname, '../public/icons')));
 
 const TEAM_FLAGS = {
-  'Algeria': '🇩🇿', 'Argentina': '🇦🇷', 'Australia': '🇦🇺', 'Austria': '🇦🇹',
-  'Belgium': '🇧🇪', 'Bosnia and Herzegovina': '🇧🇦', 'Brazil': '🇧🇷',
-  'Canada': '🇨🇦', 'Cape Verde': '🇨🇻', 'Colombia': '🇨🇴', 'Croatia': '🇭🇷',
-  'Curaçao': '🇨🇼', 'Czech Republic': '🇨🇿',
-  'Democratic Republic of the Congo': '🇨🇩',
-  'Ecuador': '🇪🇨', 'Egypt': '🇪🇬', 'England': '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
-  'France': '🇫🇷', 'Germany': '🇩🇪', 'Ghana': '🇬🇭',
-  'Haiti': '🇭🇹',
-  'Iran': '🇮🇷', 'Iraq': '🇮🇶', 'Ivory Coast': '🇨🇮',
-  'Japan': '🇯🇵', 'Jordan': '🇯🇴',
-  'Mexico': '🇲🇽', 'Morocco': '🇲🇦',
-  'Netherlands': '🇳🇱', 'New Zealand': '🇳🇿', 'Norway': '🇳🇴',
-  'Panama': '🇵🇦', 'Paraguay': '🇵🇾', 'Portugal': '🇵🇹',
-  'Qatar': '🇶🇦',
-  'Saudi Arabia': '🇸🇦', 'Scotland': '🏴󠁧󠁢󠁳󠁣󠁴󠁿', 'Senegal': '🇸🇳',
-  'South Africa': '🇿🇦', 'South Korea': '🇰🇷', 'Spain': '🇪🇸', 'Sweden': '🇸🇪',
-  'Switzerland': '🇨🇭',
-  'Tunisia': '🇹🇳', 'Turkey': '🇹🇷',
-  'United States': '🇺🇸', 'Uruguay': '🇺🇾', 'Uzbekistan': '🇺🇿',
+  'Algeria': 'dz', 'Argentina': 'ar', 'Australia': 'au', 'Austria': 'at',
+  'Belgium': 'be', 'Bosnia and Herzegovina': 'ba', 'Brazil': 'br',
+  'Canada': 'ca', 'Cape Verde': 'cv', 'Colombia': 'co', 'Croatia': 'hr',
+  'Curaçao': 'cw', 'Czech Republic': 'cz',
+  'Democratic Republic of the Congo': 'cd',
+  'Ecuador': 'ec', 'Egypt': 'eg', 'England': 'gb-eng',
+  'France': 'fr', 'Germany': 'de', 'Ghana': 'gh',
+  'Haiti': 'ht',
+  'Iran': 'ir', 'Iraq': 'iq', 'Ivory Coast': 'ci',
+  'Japan': 'jp', 'Jordan': 'jo',
+  'Mexico': 'mx', 'Morocco': 'ma',
+  'Netherlands': 'nl', 'New Zealand': 'nz', 'Norway': 'no',
+  'Panama': 'pa', 'Paraguay': 'py', 'Portugal': 'pt',
+  'Qatar': 'qa',
+  'Saudi Arabia': 'sa', 'Scotland': 'gb-sct', 'Senegal': 'sn',
+  'South Africa': 'za', 'South Korea': 'kr', 'Spain': 'es', 'Sweden': 'se',
+  'Switzerland': 'ch',
+  'Tunisia': 'tn', 'Turkey': 'tr',
+  'United States': 'us', 'Uruguay': 'uy', 'Uzbekistan': 'uz',
 };
 
+function flagImg(code) {
+  return `<img src="https://flagcdn.com/w20/${code}.png" alt="" style="height:15px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">`;
+}
+
 function teamWithFlag(name) {
-  const flag = TEAM_FLAGS[name];
-  return flag ? `${flag} ${name}` : name;
+  const code = TEAM_FLAGS[name];
+  return code ? `${flagImg(code)} ${name}` : name;
 }
 
 function teamWithFlagAfter(name) {
-  const flag = TEAM_FLAGS[name];
-  return flag ? `${name} ${flag}` : name;
+  const code = TEAM_FLAGS[name];
+  return code ? `${name} ${flagImg(code)}` : name;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -104,8 +108,8 @@ function renderPage({ matches, syncError }) {
             id: m.id,
             home,
             away,
-            homeFlag: TEAM_FLAGS[home] || '',
-            awayFlag: TEAM_FLAGS[away] || '',
+            homeFlag: TEAM_FLAGS[home] ? flagImg(TEAM_FLAGS[home]) : '',
+            awayFlag: TEAM_FLAGS[away] ? flagImg(TEAM_FLAGS[away]) : '',
             time: timePart || '—',
             finished: !!m.finished,
             homeScore: m.home_score ?? null,
@@ -834,9 +838,9 @@ function renderPage({ matches, syncError }) {
         var scoreStr = m.finished ? (m.homeScore + '–' + m.awayScore) : 'vs';
         html += '<button class="match-card' + selected + '" data-id="' + m.id + '" data-home="' + esc(m.home) + '" data-away="' + esc(m.away) + '">' +
           '<span class="match-card-time">' + esc(m.time) + '</span>' +
-          '<span class="match-card-home">' + esc(m.homeFlag) + ' ' + esc(m.home) + '</span>' +
+          '<span class="match-card-home">' + m.homeFlag + ' ' + esc(m.home) + '</span>' +
           '<span class="match-card-score">' + esc(scoreStr) + '</span>' +
-          '<span class="match-card-away">' + esc(m.away) + ' ' + esc(m.awayFlag) + '</span>' +
+          '<span class="match-card-away">' + esc(m.away) + ' ' + m.awayFlag + '</span>' +
         '</button>';
       }
       return html;
@@ -1657,7 +1661,7 @@ function renderTablesPage(groups) {
 
   const groupCards = groups.map(({ name, teams }) => {
     const rows = teams.map((t, i) => {
-      const flag = TEAM_FLAGS[t.name] || '';
+      const flag = TEAM_FLAGS[t.name] ? flagImg(TEAM_FLAGS[t.name]) : '';
       const last3html = t.last3.map(ri).join('');
       return `<tr>
             <td class="gt-rank">${i + 1}</td>
@@ -2021,7 +2025,7 @@ function buildBracketOrder(allMatches) {
 
 function koTeamRow(name, teamId, score, finished) {
   const tbd = !name || !teamId || teamId === '0';
-  const flag = !tbd ? (TEAM_FLAGS[name] || '') : '';
+  const flag = !tbd && TEAM_FLAGS[name] ? flagImg(TEAM_FLAGS[name]) : '';
   const scoreHtml = finished && score != null ? `<span class="ko-score">${score}</span>` : '';
   if (tbd) {
     return `<div class="ko-team-row"><span class="ko-shield"></span><span class="ko-name ko-tbd">TBD</span>${scoreHtml}</div>`;
