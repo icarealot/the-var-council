@@ -110,7 +110,11 @@ async function callChat(model, prompt) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return data.choices[0].message.content;
+  return {
+    text: data.choices[0].message.content,
+    inputTokens: data.usage?.prompt_tokens ?? 0,
+    outputTokens: data.usage?.completion_tokens ?? 0,
+  };
 }
 
 async function callAnthropic(model, prompt) {
@@ -129,7 +133,11 @@ async function callAnthropic(model, prompt) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return data.content[0].text;
+  return {
+    text: data.content[0].text,
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  };
 }
 
 async function callGoogle(model, prompt) {
@@ -146,7 +154,11 @@ async function callGoogle(model, prompt) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return data.candidates[0].content.parts[0].text;
+  return {
+    text: data.candidates[0].content.parts[0].text,
+    inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+    outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+  };
 }
 
 async function callResponses(model, prompt) {
@@ -166,36 +178,42 @@ async function callResponses(model, prompt) {
   const text = data.output_text ??
     data.output?.flatMap(o => o.content ?? []).find(c => c.type === 'output_text')?.text;
   if (!text) throw new Error('No text in response: ' + JSON.stringify(data).slice(0, 200));
-  return text;
+  return {
+    text,
+    inputTokens: data.usage?.input_tokens ?? 0,
+    outputTokens: data.usage?.output_tokens ?? 0,
+  };
 }
 
 async function callModel(model, prompt) {
-  let text;
-  if (model.endpoint === 'chat') text = await callChat(model, prompt);
-  else if (model.endpoint === 'anthropic') text = await callAnthropic(model, prompt);
-  else if (model.endpoint === 'google') text = await callGoogle(model, prompt);
-  else if (model.endpoint === 'responses') text = await callResponses(model, prompt);
-  else throw new Error(`Unknown endpoint: ${model.endpoint}`);
-  return parseResponse(text);
+  if (model.endpoint === 'chat') return callChat(model, prompt);
+  if (model.endpoint === 'anthropic') return callAnthropic(model, prompt);
+  if (model.endpoint === 'google') return callGoogle(model, prompt);
+  if (model.endpoint === 'responses') return callResponses(model, prompt);
+  throw new Error(`Unknown endpoint: ${model.endpoint}`);
 }
 
 async function callWithRetry(model, prompt, isKnockout) {
   const validPicks = isKnockout ? ['home', 'away'] : ['home', 'draw', 'away'];
   let lastError;
+  let capturedInputTokens = 0, capturedOutputTokens = 0;
 
   for (let attempt = 0; attempt <= 3; attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
     }
     try {
-      const result = await callModel(model, prompt);
+      const { text, inputTokens, outputTokens } = await callModel(model, prompt);
+      capturedInputTokens = inputTokens;
+      capturedOutputTokens = outputTokens;
+      const result = parseResponse(text);
       if (!validPicks.includes(result.pick)) {
         throw new Error(`Invalid pick "${result.pick}" — expected one of ${validPicks.join(', ')}`);
       }
       if (typeof result.reasoning !== 'string' || !result.reasoning.trim()) {
         throw new Error('Missing or empty reasoning');
       }
-      return { pick: result.pick, reasoning: result.reasoning.trim(), failed: false };
+      return { pick: result.pick, reasoning: result.reasoning.trim(), failed: false, inputTokens, outputTokens };
     } catch (err) {
       lastError = err;
       console.error(`[${model.name}] attempt ${attempt + 1} failed:`, err.message);
@@ -203,7 +221,7 @@ async function callWithRetry(model, prompt, isKnockout) {
   }
 
   console.error(`[${model.name}] all retries exhausted:`, lastError.message);
-  return { pick: null, reasoning: null, failed: true };
+  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens };
 }
 
 async function getPredictions(matchId) {
@@ -243,16 +261,18 @@ async function getPredictions(matchId) {
     const result = await callWithRetry(model, prompt, isKnockout);
 
     await db.execute({
-      sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id, model_name) DO UPDATE SET
-              pick         = excluded.pick,
-              reasoning    = excluded.reasoning,
-              failed       = excluded.failed,
-              order_index  = excluded.order_index,
-              predicted_at = excluded.predicted_at
+              pick          = excluded.pick,
+              reasoning     = excluded.reasoning,
+              failed        = excluded.failed,
+              order_index   = excluded.order_index,
+              predicted_at  = excluded.predicted_at,
+              input_tokens  = excluded.input_tokens,
+              output_tokens = excluded.output_tokens
             WHERE excluded.failed = 0`,
-      args: [matchId, model.name, result.pick, result.reasoning, result.failed ? 1 : 0, i, new Date().toISOString()],
+      args: [matchId, model.name, result.pick, result.reasoning, result.failed ? 1 : 0, i, new Date().toISOString(), result.inputTokens, result.outputTokens],
     });
 
     debateContext.push({ modelName: model.name, pick: result.pick, reasoning: result.reasoning, failed: result.failed });
