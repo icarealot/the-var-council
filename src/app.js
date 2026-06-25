@@ -31,7 +31,7 @@ const TEAM_FLAGS = {
 };
 
 function flagImg(code) {
-  return `<img src="https://flagcdn.com/w20/${code}.png" alt="" style="height:15px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">`;
+  return `<img src="https://flagcdn.com/w20/${code}.png" alt="" style="height:15px;width:20px;object-fit:cover;flex-shrink:0;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'">`;
 }
 
 
@@ -282,6 +282,13 @@ function renderPage({ matches, syncError }) {
     }
     .match-card:hover { border-color: var(--accent); background: var(--surface-2); }
     .match-card.selected { border-color: var(--accent); background: var(--accent-dim); }
+
+    .predictions-nav {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .predictions-nav .match-card { flex: 1; cursor: default; pointer-events: none; }
 
     .match-card-time {
       font-family: 'Space Mono', monospace;
@@ -852,7 +859,7 @@ function renderPage({ matches, syncError }) {
     function attachCardListeners(group) {
       matchArea.querySelectorAll('.match-card').forEach(function (card) {
         card.addEventListener('click', function () {
-          gotoPredictions(card.dataset.id, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel);
+          gotoPredictions(card.dataset.id, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel, card.innerHTML);
         });
       });
     }
@@ -879,9 +886,13 @@ function renderPage({ matches, syncError }) {
       hint.style.display = '';
     }
 
-    function gotoPredictions(matchId, home, away, datePart, shortLabel) {
+    function gotoPredictions(matchId, home, away, datePart, shortLabel, cardHTML) {
       activeMatchId = String(matchId);
-      navArea.innerHTML = '<button class="back-btn">← ' + esc(shortLabel) + '</button>';
+      navArea.innerHTML =
+        '<div class="predictions-nav">' +
+          '<button class="back-btn">← ' + esc(shortLabel) + '</button>' +
+          '<div class="match-card">' + cardHTML + '</div>' +
+        '</div>';
       navArea.querySelector('.back-btn').addEventListener('click', function () {
         activeMatchId = null;
         navArea.innerHTML = renderDateStrip();
