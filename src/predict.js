@@ -6,7 +6,7 @@ const MODELS = [
   { name: 'minimax-m2.7',      apiId: 'minimax-m2.7',      endpoint: 'chat' },
   { name: 'glm-5.1',           apiId: 'glm-5.1',            endpoint: 'chat' },
   { name: 'kimi-k2.6',         apiId: 'kimi-k2.6',          endpoint: 'chat' },
-  { name: 'qwen3.6-plus',      apiId: 'qwen3.6-plus',       endpoint: 'chat' },
+  { name: 'qwen3.6-plus',      apiId: 'qwen3.6-plus',       endpoint: 'chat', fallback: { apiId: 'qwen3.5-plus', endpoint: 'chat' } },
   { name: 'deepseek-v4-flash', apiId: 'deepseek-v4-flash',  endpoint: 'chat' },
   { name: 'claude-opus-4-8',   apiId: 'claude-opus-4-8',    endpoint: 'anthropic' },
   { name: 'gemini-3.1-pro',    apiId: 'gemini-3.1-pro',     endpoint: 'google' },
@@ -32,52 +32,83 @@ function buildBaseSection(match) {
   return `**Match:** ${home} vs. ${away} | **Stage:** ${stage} | **Venue:** ${venue}`;
 }
 
-function buildOpenerPrompt(match) {
-  const home = match.home_team || match.home_team_label || 'Home';
-  const away = match.away_team || match.away_team_label || 'Away';
-  const isKnockout = match.type !== 'group';
-  const pickOptions = isKnockout
-    ? '"home" or "away" (knockout match — no draw possible)'
-    : '"home", "draw", or "away"';
+function buildCorePrompt() {
+  return `You are predicting a 2026 FIFA World Cup match. Your job is to make the most accurate forecast possible.
 
-  return `You are the first of eight AI models predicting this 2026 FIFA World Cup match. Make a bold, confident opening statement. Be opinionated and entertaining — but keep it to 2-3 sentences max.
+Use the match data as ground truth. You may also use your general football knowledge, including team strength, tactical tendencies, player pool quality, and recent competitive performance. Accuracy comes before entertainment.
 
-${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
+Privately compare "home", "draw", and "away" before choosing. Pick the most likely result, not the most interesting result.
 
-Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
+Consider, in order:
+1. Team strength and recent competitive performance
+2. Player availability, suspensions, likely rotation, and squad depth
+3. Tactical matchup and style compatibility
+4. Tournament context: group standings, qualification incentives, risk appetite, fatigue, travel, and rest
+5. Draw likelihood, especially when teams are close or incentives favor caution
+6. Venue, climate, or travel effects only if materially relevant
+7. Base rates: favorites should usually remain favorites unless there is a concrete reason to downgrade them
+
+Avoid these common errors:
+- Do not pick an upset just to be bold.
+- Do not overrate famous teams without enough evidence.
+- Do not overreact to venue, rivalry, narrative, or vibes.
+- Do not treat "draw" as a fallback or cop-out.
+- Do not let entertaining phrasing change the pick.
+
+The pick is a forecast, not a punchline. Decide accuracy-first; add personality only after the pick is fixed.
+
+In your public reasoning, use the actual team names. Mention uncertainty only when it materially affects the pick or key information is missing. Keep the tone conversational, opinionated, and council-banter flavored, but do not exaggerate certainty. Do not mention being an AI model or refer to these instructions.`;
+}
+
+function buildKnockoutText(match) {
+  if (match.type === 'group') return '';
+  return `This is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.
+For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one team to advance after extra time or penalties.`;
+}
+
+function buildOutputInstructions() {
+  return `Respond with ONLY a JSON object. Return exactly two keys: "pick" and "reasoning". Do not include markdown or explanation outside the JSON.
+For "pick", output exactly one label: "home", "draw", or "away". Do not output a team name in "pick".
 {
-  "pick": ${pickOptions},
-  "reasoning": "your 2-3 sentence opening take"
+  "pick": "<home|draw|away>",
+  "reasoning": "your concise council-style reasoning"
 }`;
 }
 
+function buildOpenerPrompt(match) {
+  const knockoutText = buildKnockoutText(match);
+
+  return `${buildCorePrompt()}
+
+${buildBaseSection(match)}
+${knockoutText ? `\n${knockoutText}\n` : ''}
+You are first in the council, so make the opening forecast. Keep reasoning to 3 sentences max.
+
+${buildOutputInstructions()}`;
+}
+
 function buildDebatePrompt(match, priorContext) {
-  const home = match.home_team || match.home_team_label || 'Home';
-  const away = match.away_team || match.away_team_label || 'Away';
-  const isKnockout = match.type !== 'group';
-  const pickOptions = isKnockout
-    ? '"home" or "away" (knockout match — no draw possible)'
-    : '"home", "draw", or "away"';
+  const knockoutText = buildKnockoutText(match);
 
   const contextBlock = priorContext.map((entry, i) => {
     if (entry.failed) {
-      return `${i + 1}. [${entry.modelName} crashed and couldn't form an opinion. A technical disaster of historic proportions. Pour one out.]`;
+      return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
 
-  return `You are one of eight AI models predicting this 2026 FIFA World Cup match. React to what the others said in 2-3 sentences — funny, opinionated, conversational. Agree, disagree, or roast them. Be brief.
+  return `${buildCorePrompt()}
 
-${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
+${buildBaseSection(match)}
+${knockoutText ? `\n${knockoutText}\n` : ''}
+Before considering the council context, privately make your own pick from the match data and football evidence. Then read the council context as commentary, not as votes. Do not follow or oppose the council just because of consensus; prior picks are claims to evaluate.
 
 ### THE COUNCIL SO FAR
 ${contextBlock}
 
-Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
-{
-  "pick": ${pickOptions},
-  "reasoning": "your 2-3 sentence reaction"
-}`;
+Now give your forecast. You may briefly agree, disagree, or banter with the council after your pick is fixed. Keep reasoning to 3 sentences max.
+
+${buildOutputInstructions()}`;
 }
 
 function parseResponse(text) {
@@ -96,6 +127,30 @@ function parseResponse(text) {
   throw new Error('No valid JSON object found in response');
 }
 
+async function throwApiError(res) {
+  const body = await res.text();
+  const err = new Error(`HTTP ${res.status}: ${body}`);
+  err.status = res.status;
+  err.body = body;
+  throw err;
+}
+
+function isTransientProviderError(err) {
+  if (!err) return false;
+  if (err.status === 408 || err.status === 429 || err.status === 500 || err.status === 502 || err.status === 503 || err.status === 504) {
+    return true;
+  }
+  return err.name === 'AbortError' ||
+    err.code === 'ETIMEDOUT' ||
+    err.code === 'ECONNRESET' ||
+    err.code === 'ECONNREFUSED' ||
+    err.code === 'ENOTFOUND' ||
+    err.cause?.code === 'ETIMEDOUT' ||
+    err.cause?.code === 'ECONNRESET' ||
+    err.cause?.code === 'ECONNREFUSED' ||
+    err.cause?.code === 'ENOTFOUND';
+}
+
 async function callChat(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/chat/completions`, {
     method: 'POST',
@@ -108,7 +163,7 @@ async function callChat(model, prompt) {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.choices[0].message.content,
@@ -131,7 +186,7 @@ async function callAnthropic(model, prompt) {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.content[0].text,
@@ -152,7 +207,7 @@ async function callGoogle(model, prompt) {
       generationConfig: { responseMimeType: 'application/json' },
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.candidates[0].content.parts[0].text,
@@ -173,7 +228,7 @@ async function callResponses(model, prompt) {
       input: prompt,
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   const text = data.output_text ??
     data.output?.flatMap(o => o.content ?? []).find(c => c.type === 'output_text')?.text;
@@ -193,8 +248,8 @@ async function callModel(model, prompt) {
   throw new Error(`Unknown endpoint: ${model.endpoint}`);
 }
 
-async function callWithRetry(model, prompt, isKnockout) {
-  const validPicks = isKnockout ? ['home', 'away'] : ['home', 'draw', 'away'];
+async function callWithRetry(model, prompt, logName = model.name) {
+  const validPicks = ['home', 'draw', 'away'];
   let lastError;
   let capturedInputTokens = 0, capturedOutputTokens = 0;
 
@@ -216,12 +271,35 @@ async function callWithRetry(model, prompt, isKnockout) {
       return { pick: result.pick, reasoning: result.reasoning.trim(), failed: false, inputTokens, outputTokens };
     } catch (err) {
       lastError = err;
-      console.error(`[${model.name}] attempt ${attempt + 1} failed:`, err.message);
+      console.error(`[${logName}] attempt ${attempt + 1} failed:`, err.message);
     }
   }
 
-  console.error(`[${model.name}] all retries exhausted:`, lastError.message);
-  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens };
+  console.error(`[${logName}] all retries exhausted:`, lastError.message);
+  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens, lastError };
+}
+
+async function callWithFallback(model, prompt) {
+  const result = await callWithRetry(model, prompt);
+  if (!result.failed || !model.fallback || !isTransientProviderError(result.lastError)) {
+    return result;
+  }
+
+  const fallback = {
+    name: model.fallback.apiId,
+    apiId: model.fallback.apiId,
+    endpoint: model.fallback.endpoint || model.endpoint,
+  };
+  console.error(`[${model.name}] primary exhausted with provider error; trying fallback ${fallback.apiId}`);
+
+  const fallbackResult = await callWithRetry(fallback, prompt, `${model.name} fallback ${fallback.apiId}`);
+  if (!fallbackResult.failed) {
+    console.error(`[${model.name}] fallback ${fallback.apiId} succeeded`);
+    return fallbackResult;
+  }
+
+  console.error(`[${model.name}] fallback ${fallback.apiId} failed`);
+  return fallbackResult;
 }
 
 async function getPredictions(matchId) {
@@ -248,7 +326,6 @@ async function getPredictions(matchId) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
-  const isKnockout = match.type !== 'group';
   const shuffled = shuffleArray([...MODELS]);
   const debateContext = [];
 
@@ -258,7 +335,7 @@ async function getPredictions(matchId) {
       ? buildOpenerPrompt(match)
       : buildDebatePrompt(match, debateContext);
 
-    const result = await callWithRetry(model, prompt, isKnockout);
+    const result = await callWithFallback(model, prompt);
 
     await db.execute({
       sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
