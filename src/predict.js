@@ -36,13 +36,14 @@ function buildOpenerPrompt(match) {
   const home = match.home_team || match.home_team_label || 'Home';
   const away = match.away_team || match.away_team_label || 'Away';
   const isKnockout = match.type !== 'group';
-  const pickOptions = isKnockout
-    ? '"home" or "away" (knockout match — no draw possible)'
-    : '"home", "draw", or "away"';
+  const pickOptions = '"home", "draw", or "away"';
+  const knockoutNote = isKnockout
+    ? '\nThis is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.'
+    : '';
 
   return `You are the first of eight AI models predicting this 2026 FIFA World Cup match. Make a bold, confident opening statement. Be opinionated and entertaining — but keep it to 2-3 sentences max.
 
-${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
+${buildBaseSection(match)}${knockoutNote}
 
 Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
 {
@@ -55,9 +56,10 @@ function buildDebatePrompt(match, priorContext) {
   const home = match.home_team || match.home_team_label || 'Home';
   const away = match.away_team || match.away_team_label || 'Away';
   const isKnockout = match.type !== 'group';
-  const pickOptions = isKnockout
-    ? '"home" or "away" (knockout match — no draw possible)'
-    : '"home", "draw", or "away"';
+  const pickOptions = '"home", "draw", or "away"';
+  const knockoutNote = isKnockout
+    ? '\nThis is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.'
+    : '';
 
   const contextBlock = priorContext.map((entry, i) => {
     if (entry.failed) {
@@ -68,7 +70,7 @@ function buildDebatePrompt(match, priorContext) {
 
   return `You are one of eight AI models predicting this 2026 FIFA World Cup match. React to what the others said in 2-3 sentences — funny, opinionated, conversational. Agree, disagree, or roast them. Be brief.
 
-${buildBaseSection(match)}${isKnockout ? '\nThis is a knockout match — no draw.' : ''}
+${buildBaseSection(match)}${knockoutNote}
 
 ### THE COUNCIL SO FAR
 ${contextBlock}
@@ -193,8 +195,8 @@ async function callModel(model, prompt) {
   throw new Error(`Unknown endpoint: ${model.endpoint}`);
 }
 
-async function callWithRetry(model, prompt, isKnockout) {
-  const validPicks = isKnockout ? ['home', 'away'] : ['home', 'draw', 'away'];
+async function callWithRetry(model, prompt) {
+  const validPicks = ['home', 'draw', 'away'];
   let lastError;
   let capturedInputTokens = 0, capturedOutputTokens = 0;
 
@@ -248,7 +250,6 @@ async function getPredictions(matchId) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
-  const isKnockout = match.type !== 'group';
   const shuffled = shuffleArray([...MODELS]);
   const debateContext = [];
 
@@ -258,7 +259,7 @@ async function getPredictions(matchId) {
       ? buildOpenerPrompt(match)
       : buildDebatePrompt(match, debateContext);
 
-    const result = await callWithRetry(model, prompt, isKnockout);
+    const result = await callWithRetry(model, prompt);
 
     await db.execute({
       sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
