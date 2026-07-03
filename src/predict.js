@@ -6,7 +6,7 @@ const MODELS = [
   { name: 'minimax-m2.7',      apiId: 'minimax-m2.7',      endpoint: 'chat' },
   { name: 'glm-5.1',           apiId: 'glm-5.1',            endpoint: 'chat' },
   { name: 'kimi-k2.6',         apiId: 'kimi-k2.6',          endpoint: 'chat' },
-  { name: 'qwen3.6-plus',      apiId: 'qwen3.6-plus',       endpoint: 'chat' },
+  { name: 'qwen3.6-plus',      apiId: 'qwen3.6-plus',       endpoint: 'chat', fallback: { apiId: 'qwen3.5-plus', endpoint: 'chat' } },
   { name: 'deepseek-v4-flash', apiId: 'deepseek-v4-flash',  endpoint: 'chat' },
   { name: 'claude-opus-4-8',   apiId: 'claude-opus-4-8',    endpoint: 'anthropic' },
   { name: 'gemini-3.1-pro',    apiId: 'gemini-3.1-pro',     endpoint: 'google' },
@@ -98,6 +98,30 @@ function parseResponse(text) {
   throw new Error('No valid JSON object found in response');
 }
 
+async function throwApiError(res) {
+  const body = await res.text();
+  const err = new Error(`HTTP ${res.status}: ${body}`);
+  err.status = res.status;
+  err.body = body;
+  throw err;
+}
+
+function isTransientProviderError(err) {
+  if (!err) return false;
+  if (err.status === 408 || err.status === 429 || err.status === 500 || err.status === 502 || err.status === 503 || err.status === 504) {
+    return true;
+  }
+  return err.name === 'AbortError' ||
+    err.code === 'ETIMEDOUT' ||
+    err.code === 'ECONNRESET' ||
+    err.code === 'ECONNREFUSED' ||
+    err.code === 'ENOTFOUND' ||
+    err.cause?.code === 'ETIMEDOUT' ||
+    err.cause?.code === 'ECONNRESET' ||
+    err.cause?.code === 'ECONNREFUSED' ||
+    err.cause?.code === 'ENOTFOUND';
+}
+
 async function callChat(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/chat/completions`, {
     method: 'POST',
@@ -110,7 +134,7 @@ async function callChat(model, prompt) {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.choices[0].message.content,
@@ -133,7 +157,7 @@ async function callAnthropic(model, prompt) {
       messages: [{ role: 'user', content: prompt }],
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.content[0].text,
@@ -154,7 +178,7 @@ async function callGoogle(model, prompt) {
       generationConfig: { responseMimeType: 'application/json' },
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   return {
     text: data.candidates[0].content.parts[0].text,
@@ -175,7 +199,7 @@ async function callResponses(model, prompt) {
       input: prompt,
     }),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  if (!res.ok) await throwApiError(res);
   const data = await res.json();
   const text = data.output_text ??
     data.output?.flatMap(o => o.content ?? []).find(c => c.type === 'output_text')?.text;
@@ -195,7 +219,7 @@ async function callModel(model, prompt) {
   throw new Error(`Unknown endpoint: ${model.endpoint}`);
 }
 
-async function callWithRetry(model, prompt) {
+async function callWithRetry(model, prompt, logName = model.name) {
   const validPicks = ['home', 'draw', 'away'];
   let lastError;
   let capturedInputTokens = 0, capturedOutputTokens = 0;
@@ -218,12 +242,35 @@ async function callWithRetry(model, prompt) {
       return { pick: result.pick, reasoning: result.reasoning.trim(), failed: false, inputTokens, outputTokens };
     } catch (err) {
       lastError = err;
-      console.error(`[${model.name}] attempt ${attempt + 1} failed:`, err.message);
+      console.error(`[${logName}] attempt ${attempt + 1} failed:`, err.message);
     }
   }
 
-  console.error(`[${model.name}] all retries exhausted:`, lastError.message);
-  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens };
+  console.error(`[${logName}] all retries exhausted:`, lastError.message);
+  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens, lastError };
+}
+
+async function callWithFallback(model, prompt) {
+  const result = await callWithRetry(model, prompt);
+  if (!result.failed || !model.fallback || !isTransientProviderError(result.lastError)) {
+    return result;
+  }
+
+  const fallback = {
+    name: model.fallback.apiId,
+    apiId: model.fallback.apiId,
+    endpoint: model.fallback.endpoint || model.endpoint,
+  };
+  console.error(`[${model.name}] primary exhausted with provider error; trying fallback ${fallback.apiId}`);
+
+  const fallbackResult = await callWithRetry(fallback, prompt, `${model.name} fallback ${fallback.apiId}`);
+  if (!fallbackResult.failed) {
+    console.error(`[${model.name}] fallback ${fallback.apiId} succeeded`);
+    return fallbackResult;
+  }
+
+  console.error(`[${model.name}] fallback ${fallback.apiId} failed`);
+  return fallbackResult;
 }
 
 async function getPredictions(matchId) {
@@ -259,7 +306,7 @@ async function getPredictions(matchId) {
       ? buildOpenerPrompt(match)
       : buildDebatePrompt(match, debateContext);
 
-    const result = await callWithRetry(model, prompt);
+    const result = await callWithFallback(model, prompt);
 
     await db.execute({
       sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
