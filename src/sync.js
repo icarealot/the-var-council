@@ -32,6 +32,16 @@ function convertToICT(localDate, region) {
   return `${y}-${mo}-${dy} ${hr}:${mi}`;
 }
 
+function parseScore(value, field, gameId) {
+  if (value == null || value === '' || value === 'null') return null;
+
+  const score = parseInt(value, 10);
+  if (Number.isFinite(score)) return score;
+
+  console.warn(`Ignoring invalid ${field} for game ${gameId}: ${JSON.stringify(value)}`);
+  return null;
+}
+
 async function fetchJSON(path) {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; WorldCup2026Tracker/1.0)' },
@@ -99,8 +109,8 @@ async function sync() {
       const homeTeamLabel = g.home_team_label || null;
       const awayTeamLabel = g.away_team_label || null;
 
-      const homeScore = g.home_score != null && g.home_score !== '' ? parseInt(g.home_score) : null;
-      const awayScore = g.away_score != null && g.away_score !== '' ? parseInt(g.away_score) : null;
+      const homeScore = parseScore(g.home_score, 'home_score', g.id);
+      const awayScore = parseScore(g.away_score, 'away_score', g.id);
       const finished = g.finished === 'TRUE' ? 1 : 0;
 
       return {
