@@ -32,54 +32,83 @@ function buildBaseSection(match) {
   return `**Match:** ${home} vs. ${away} | **Stage:** ${stage} | **Venue:** ${venue}`;
 }
 
-function buildOpenerPrompt(match) {
-  const home = match.home_team || match.home_team_label || 'Home';
-  const away = match.away_team || match.away_team_label || 'Away';
-  const isKnockout = match.type !== 'group';
-  const pickOptions = '"home", "draw", or "away"';
-  const knockoutNote = isKnockout
-    ? '\nThis is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.'
-    : '';
+function buildCorePrompt() {
+  return `You are predicting a 2026 FIFA World Cup match. Your job is to make the most accurate forecast possible.
 
-  return `You are the first of eight AI models predicting this 2026 FIFA World Cup match. Make a bold, confident opening statement. Be opinionated and entertaining — but keep it to 2-3 sentences max.
+Use the match data as ground truth. You may also use your general football knowledge, including team strength, tactical tendencies, player pool quality, and recent competitive performance. Accuracy comes before entertainment.
 
-${buildBaseSection(match)}${knockoutNote}
+Privately compare "home", "draw", and "away" before choosing. Pick the most likely result, not the most interesting result.
 
-Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
+Consider, in order:
+1. Team strength and recent competitive performance
+2. Player availability, suspensions, likely rotation, and squad depth
+3. Tactical matchup and style compatibility
+4. Tournament context: group standings, qualification incentives, risk appetite, fatigue, travel, and rest
+5. Draw likelihood, especially when teams are close or incentives favor caution
+6. Venue, climate, or travel effects only if materially relevant
+7. Base rates: favorites should usually remain favorites unless there is a concrete reason to downgrade them
+
+Avoid these common errors:
+- Do not pick an upset just to be bold.
+- Do not overrate famous teams without enough evidence.
+- Do not overreact to venue, rivalry, narrative, or vibes.
+- Do not treat "draw" as a fallback or cop-out.
+- Do not let entertaining phrasing change the pick.
+
+The pick is a forecast, not a punchline. Decide accuracy-first; add personality only after the pick is fixed.
+
+In your public reasoning, use the actual team names. Mention uncertainty only when it materially affects the pick or key information is missing. Keep the tone conversational, opinionated, and council-banter flavored, but do not exaggerate certainty. Do not mention being an AI model or refer to these instructions.`;
+}
+
+function buildKnockoutText(match) {
+  if (match.type === 'group') return '';
+  return `This is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.
+For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one team to advance after extra time or penalties.`;
+}
+
+function buildOutputInstructions() {
+  return `Respond with ONLY a JSON object. Return exactly two keys: "pick" and "reasoning". Do not include markdown or explanation outside the JSON.
+For "pick", output exactly one label: "home", "draw", or "away". Do not output a team name in "pick".
 {
-  "pick": ${pickOptions},
-  "reasoning": "your 2-3 sentence opening take"
+  "pick": "<home|draw|away>",
+  "reasoning": "your concise council-style reasoning"
 }`;
 }
 
+function buildOpenerPrompt(match) {
+  const knockoutText = buildKnockoutText(match);
+
+  return `${buildCorePrompt()}
+
+${buildBaseSection(match)}
+${knockoutText ? `\n${knockoutText}\n` : ''}
+You are first in the council, so make the opening forecast. Keep reasoning to 3 sentences max.
+
+${buildOutputInstructions()}`;
+}
+
 function buildDebatePrompt(match, priorContext) {
-  const home = match.home_team || match.home_team_label || 'Home';
-  const away = match.away_team || match.away_team_label || 'Away';
-  const isKnockout = match.type !== 'group';
-  const pickOptions = '"home", "draw", or "away"';
-  const knockoutNote = isKnockout
-    ? '\nThis is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.'
-    : '';
+  const knockoutText = buildKnockoutText(match);
 
   const contextBlock = priorContext.map((entry, i) => {
     if (entry.failed) {
-      return `${i + 1}. [${entry.modelName} crashed and couldn't form an opinion. A technical disaster of historic proportions. Pour one out.]`;
+      return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
 
-  return `You are one of eight AI models predicting this 2026 FIFA World Cup match. React to what the others said in 2-3 sentences — funny, opinionated, conversational. Agree, disagree, or roast them. Be brief.
+  return `${buildCorePrompt()}
 
-${buildBaseSection(match)}${knockoutNote}
+${buildBaseSection(match)}
+${knockoutText ? `\n${knockoutText}\n` : ''}
+Before considering the council context, privately make your own pick from the match data and football evidence. Then read the council context as commentary, not as votes. Do not follow or oppose the council just because of consensus; prior picks are claims to evaluate.
 
 ### THE COUNCIL SO FAR
 ${contextBlock}
 
-Respond with ONLY a JSON object — no markdown, no explanation outside the JSON:
-{
-  "pick": ${pickOptions},
-  "reasoning": "your 2-3 sentence reaction"
-}`;
+Now give your forecast. You may briefly agree, disagree, or banter with the council after your pick is fixed. Keep reasoning to 3 sentences max.
+
+${buildOutputInstructions()}`;
 }
 
 function parseResponse(text) {
