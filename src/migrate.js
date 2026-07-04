@@ -35,6 +35,9 @@ async function migrate() {
       match_id     INTEGER NOT NULL,
       model_name   TEXT    NOT NULL,
       pick         TEXT    CHECK (pick IN ('home', 'draw', 'away')),
+      home_score_90 INTEGER,
+      away_score_90  INTEGER,
+      advancing_team TEXT    CHECK (advancing_team IN ('home', 'away')),
       reasoning    TEXT,
       failed       INTEGER NOT NULL DEFAULT 0,
       order_index  INTEGER,
@@ -62,6 +65,20 @@ async function migrate() {
     } catch (e) {
       if (!e.message.toLowerCase().includes('duplicate column')) throw e;
     }
+  }
+
+  for (const col of ['home_score_90', 'away_score_90']) {
+    try {
+      await db.execute(`ALTER TABLE predictions ADD COLUMN ${col} INTEGER`);
+    } catch (e) {
+      if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+    }
+  }
+
+  try {
+    await db.execute(`ALTER TABLE predictions ADD COLUMN advancing_team TEXT`);
+  } catch (e) {
+    if (!e.message.toLowerCase().includes('duplicate column')) throw e;
   }
 }
 

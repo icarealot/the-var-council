@@ -496,6 +496,27 @@ function renderPage({ matches, syncError }) {
     .bubble-pick { display: flex; align-items: center; gap: 6px; }
     .result-icon { font-size: 18px; line-height: 1; display: flex; align-items: center; align-self: center; }
 
+    .bubble-ko-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .bubble-ko-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .bubble-ko-label {
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
     .bubble-reason {
       font-size: 15px;
       color: var(--text-muted);
@@ -701,6 +722,29 @@ function renderPage({ matches, syncError }) {
       return '<span class="pick-badge pick-failed">Prediction unavailable</span>';
     }
 
+    function sideName(side, home, away) {
+      if (side === 'home') return home;
+      if (side === 'away') return away;
+      return '';
+    }
+
+    function hasKnockoutDetails(p) {
+      return p &&
+        p.home_score_90 !== null && p.home_score_90 !== undefined &&
+        p.away_score_90 !== null && p.away_score_90 !== undefined &&
+        (p.advancing_team === 'home' || p.advancing_team === 'away');
+    }
+
+    function renderKnockoutDetails(p, home, away, iconHtml) {
+      var advance = sideName(p.advancing_team, home, away);
+      return '<div class="bubble-ko-lines">' +
+        '<div class="bubble-ko-line"><span class="bubble-ko-label">90&#39;:</span><span>' +
+          esc(home) + ' ' + esc(p.home_score_90) + '&ndash;' + esc(p.away_score_90) + ' ' + esc(away) +
+        '</span>' + iconHtml + '</div>' +
+        '<div class="bubble-ko-line"><span class="bubble-ko-label">Advance:</span><span>' + esc(advance) + '</span></div>' +
+      '</div>';
+    }
+
     function deriveResult(match) {
       if (!match || !match.finished) return null;
       var h = match.home_score, a = match.away_score;
@@ -762,9 +806,11 @@ function renderPage({ matches, syncError }) {
                         : isWrong   ? '<span class="result-icon">❌</span>'
                         : '';
 
-          var badgeHtml = '<div class="bubble-pick">' + (p.failed
-            ? '<span class="pick-badge pick-failed">Prediction unavailable</span>'
-            : pickBadge(p.pick, home, away)) + iconHtml + '</div>';
+          var badgeHtml = hasKnockoutDetails(p) && !p.failed
+            ? renderKnockoutDetails(p, home, away, iconHtml)
+            : '<div class="bubble-pick">' + (p.failed
+              ? '<span class="pick-badge pick-failed">Prediction unavailable</span>'
+              : pickBadge(p.pick, home, away)) + iconHtml + '</div>';
 
           var reasonHtml = p.failed
             ? '<span class="bubble-reason" style="font-style:italic">Prediction unavailable</span>'
