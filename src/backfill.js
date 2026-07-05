@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const db = require('./db');
-const { getPredictions, MODELS } = require('./predict');
+const { getPredictions, MODELS, FORECAST_VERSION } = require('./predict');
 
 const MODEL_COUNT = MODELS.length;
 
@@ -15,11 +15,27 @@ async function backfill({ silent = false } = {}) {
             AND m.home_team_id != '0'
             AND m.away_team_id != '0'
             AND (
-              SELECT COUNT(*) FROM predictions p
-              WHERE p.match_id = m.id AND p.failed = 0
-            ) < ?
+              NOT EXISTS (
+                SELECT 1 FROM predictions p
+                WHERE p.match_id = m.id
+              )
+              OR (
+                EXISTS (
+                  SELECT 1 FROM predictions p
+                  WHERE p.match_id = m.id AND p.forecast_version = ?
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM predictions p
+                  WHERE p.match_id = m.id AND COALESCE(p.forecast_version, 1) != ?
+                )
+                AND (
+                  SELECT COUNT(*) FROM predictions p
+                  WHERE p.match_id = m.id AND p.failed = 0
+                ) < ?
+              )
+            )
           ORDER BY m.local_date_ict ASC`,
-    args: [MODEL_COUNT],
+    args: [FORECAST_VERSION, FORECAST_VERSION, MODEL_COUNT],
   });
 
   const ids = result.rows.map((r) => r.id);

@@ -1,6 +1,7 @@
 const db = require('./db');
 
 const ZEN_BASE = process.env.OPENCODE_ZEN_BASE_URL || 'https://opencode.ai/zen/v1';
+const FORECAST_VERSION = 2;
 
 const MODELS = [
   { name: 'minimax-m2.7',      apiId: 'minimax-m2.7',      endpoint: 'chat' },
@@ -63,10 +64,26 @@ In your public reasoning, use the actual team names. Mention uncertainty only wh
 function buildKnockoutText(match) {
   if (match.type === 'group') return '';
   return `This is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.
-For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one team to advance after extra time or penalties.`;
+For knockout matches, predict the 90-minute score only; do not include extra time or penalties in the score.
+For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one team to advance after extra time or penalties.
+Also predict which team advances. If your 90-minute pick is "home" or "away", the advancing team must be the same side. If your 90-minute pick is "draw", choose the side you expect to advance after extra time or penalties.`;
 }
 
-function buildOutputInstructions() {
+function isKnockout(match) {
+  return match.type !== 'group';
+}
+
+function buildOutputInstructions(match) {
+  if (isKnockout(match)) {
+    return `Respond with ONLY a JSON object. Return exactly five keys: "pick", "home_score_90", "away_score_90", "advancing_team", and "reasoning". Do not include markdown or explanation outside the JSON.
+For "pick", output exactly one label: "home", "draw", or "away". Do not output a team name in "pick".
+For "home_score_90" and "away_score_90", output non-negative integers from 0 to 9 for the score after 90 minutes plus stoppage time, excluding extra time and penalties.
+The score must match "pick": home_score_90 > away_score_90 for "home", away_score_90 > home_score_90 for "away", and equal scores for "draw".
+For "advancing_team", output exactly "home" or "away". If "pick" is "home" or "away", "advancing_team" must be the same side.
+In "reasoning", explain both the 90-minute forecast and the advancement logic in no more than 3 sentences.
+Choose the score from the match evidence. Do not copy an example score or reuse a previous council member's score by default.`;
+  }
+
   return `Respond with ONLY a JSON object. Return exactly two keys: "pick" and "reasoning". Do not include markdown or explanation outside the JSON.
 For "pick", output exactly one label: "home", "draw", or "away". Do not output a team name in "pick".
 {
@@ -82,33 +99,50 @@ function buildOpenerPrompt(match) {
 
 ${buildBaseSection(match)}
 ${knockoutText ? `\n${knockoutText}\n` : ''}
-You are first in the council, so make the opening forecast. Keep reasoning to 3 sentences max.
+Make your forecast independently. You cannot see any other council member's forecast yet. Keep reasoning to 3 sentences max.
 
-${buildOutputInstructions()}`;
+${buildOutputInstructions(match)}`;
 }
 
-function buildDebatePrompt(match, priorContext) {
-  const knockoutText = buildKnockoutText(match);
+function formatCouncilContext(match, predictions) {
+  const home = match.home_team || match.home_team_label || 'Home';
+  const away = match.away_team || match.away_team_label || 'Away';
 
-  const contextBlock = priorContext.map((entry, i) => {
+  function sideName(side) {
+    if (side === 'home') return home;
+    if (side === 'away') return away;
+    return side;
+  }
+
+  return predictions.map((entry, i) => {
     if (entry.failed) {
       return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
+    if (isKnockout(match) && entry.advancing_team) {
+      return `${i + 1}. ${entry.modelName} predicts: ${entry.pick.toUpperCase()}, advances: ${sideName(entry.advancing_team)}\n"${entry.reasoning}"`;
+    }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
+}
 
-  return `${buildCorePrompt()}
+function buildDebatePrompt(match, lockedPrediction, allPredictions) {
+  const contextBlock = formatCouncilContext(match, allPredictions);
+  const ownPick = lockedPrediction.failed ? 'FAILED' : lockedPrediction.pick.toUpperCase();
 
+  return `You are participating in a light council discussion after all forecasts have already been locked.
 ${buildBaseSection(match)}
-${knockoutText ? `\n${knockoutText}\n` : ''}
-Before considering the council context, privately make your own pick from the match data and football evidence. Then read the council context as commentary, not as votes. Do not follow or oppose the council just because of consensus; prior picks are claims to evaluate.
+
+Your locked forecast is ${ownPick}. You must not change it, replace it, or output a new pick.
 
 ### THE COUNCIL SO FAR
 ${contextBlock}
 
-Now give your forecast. You may briefly agree, disagree, or banter with the council after your pick is fixed. Keep reasoning to 3 sentences max.
+Write a concise council-style reaction in no more than 3 sentences. You may agree, disagree, or banter with the council, but the locked forecast remains unchanged.
 
-${buildOutputInstructions()}`;
+Respond with ONLY a JSON object with exactly one key: "commentary".
+{
+  "commentary": "your concise reaction"
+}`;
 }
 
 function parseResponse(text) {
@@ -151,6 +185,41 @@ function isTransientProviderError(err) {
     err.cause?.code === 'ENOTFOUND';
 }
 
+function validatePickAndScore(result, match) {
+  const validPicks = ['home', 'draw', 'away'];
+  if (!validPicks.includes(result.pick)) {
+    throw new Error(`Invalid pick "${result.pick}" — expected one of ${validPicks.join(', ')}`);
+  }
+
+  if (!isKnockout(match)) return;
+
+  const validAdvance = ['home', 'away'];
+  if (!validAdvance.includes(result.advancing_team)) {
+    throw new Error(`Invalid advancing_team "${result.advancing_team}" — expected home or away`);
+  }
+
+  for (const key of ['home_score_90', 'away_score_90']) {
+    if (!Number.isInteger(result[key]) || result[key] < 0 || result[key] > 9) {
+      throw new Error(`Invalid ${key} "${result[key]}" — expected integer from 0 to 9`);
+    }
+  }
+
+  const homeScore = result.home_score_90;
+  const awayScore = result.away_score_90;
+  if (result.pick === 'home' && homeScore <= awayScore) {
+    throw new Error('pick home must have home_score_90 greater than away_score_90');
+  }
+  if (result.pick === 'away' && awayScore <= homeScore) {
+    throw new Error('pick away must have away_score_90 greater than home_score_90');
+  }
+  if (result.pick === 'draw' && homeScore !== awayScore) {
+    throw new Error('pick draw must have equal 90-minute scores');
+  }
+  if (result.pick !== 'draw' && result.advancing_team !== result.pick) {
+    throw new Error('advancing_team must match pick when the 90-minute result has a winner');
+  }
+}
+
 async function callChat(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/chat/completions`, {
     method: 'POST',
@@ -182,7 +251,7 @@ async function callAnthropic(model, prompt) {
     },
     body: JSON.stringify({
       model: model.apiId,
-      max_tokens: 300,
+      max_tokens: 450,
       messages: [{ role: 'user', content: prompt }],
     }),
   });
@@ -248,8 +317,7 @@ async function callModel(model, prompt) {
   throw new Error(`Unknown endpoint: ${model.endpoint}`);
 }
 
-async function callWithRetry(model, prompt, logName = model.name) {
-  const validPicks = ['home', 'draw', 'away'];
+async function callWithRetry(model, prompt, match, logName = model.name) {
   let lastError;
   let capturedInputTokens = 0, capturedOutputTokens = 0;
 
@@ -262,13 +330,20 @@ async function callWithRetry(model, prompt, logName = model.name) {
       capturedInputTokens = inputTokens;
       capturedOutputTokens = outputTokens;
       const result = parseResponse(text);
-      if (!validPicks.includes(result.pick)) {
-        throw new Error(`Invalid pick "${result.pick}" — expected one of ${validPicks.join(', ')}`);
-      }
+      validatePickAndScore(result, match);
       if (typeof result.reasoning !== 'string' || !result.reasoning.trim()) {
         throw new Error('Missing or empty reasoning');
       }
-      return { pick: result.pick, reasoning: result.reasoning.trim(), failed: false, inputTokens, outputTokens };
+      return {
+        pick: result.pick,
+        home_score_90: isKnockout(match) ? result.home_score_90 : null,
+        away_score_90: isKnockout(match) ? result.away_score_90 : null,
+        advancing_team: isKnockout(match) ? result.advancing_team : null,
+        reasoning: result.reasoning.trim(),
+        failed: false,
+        inputTokens,
+        outputTokens,
+      };
     } catch (err) {
       lastError = err;
       console.error(`[${logName}] attempt ${attempt + 1} failed:`, err.message);
@@ -276,11 +351,21 @@ async function callWithRetry(model, prompt, logName = model.name) {
   }
 
   console.error(`[${logName}] all retries exhausted:`, lastError.message);
-  return { pick: null, reasoning: null, failed: true, inputTokens: capturedInputTokens, outputTokens: capturedOutputTokens, lastError };
+  return {
+    pick: null,
+    home_score_90: null,
+    away_score_90: null,
+    advancing_team: null,
+    reasoning: null,
+    failed: true,
+    inputTokens: capturedInputTokens,
+    outputTokens: capturedOutputTokens,
+    lastError,
+  };
 }
 
-async function callWithFallback(model, prompt) {
-  const result = await callWithRetry(model, prompt);
+async function callWithFallback(model, prompt, match) {
+  const result = await callWithRetry(model, prompt, match);
   if (!result.failed || !model.fallback || !isTransientProviderError(result.lastError)) {
     return result;
   }
@@ -292,13 +377,66 @@ async function callWithFallback(model, prompt) {
   };
   console.error(`[${model.name}] primary exhausted with provider error; trying fallback ${fallback.apiId}`);
 
-  const fallbackResult = await callWithRetry(fallback, prompt, `${model.name} fallback ${fallback.apiId}`);
+  const fallbackResult = await callWithRetry(fallback, prompt, match, `${model.name} fallback ${fallback.apiId}`);
   if (!fallbackResult.failed) {
     console.error(`[${model.name}] fallback ${fallback.apiId} succeeded`);
     return fallbackResult;
   }
 
   console.error(`[${model.name}] fallback ${fallback.apiId} failed`);
+  return fallbackResult;
+}
+
+async function callCommentaryWithRetry(model, prompt, logName = model.name) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+    }
+    try {
+      const { text } = await callModel(model, prompt);
+      const result = parseResponse(text);
+      if (typeof result.commentary !== 'string' || !result.commentary.trim()) {
+        throw new Error('Missing or empty commentary');
+      }
+      return {
+        debate_reasoning: result.commentary.trim(),
+        failed: false,
+      };
+    } catch (err) {
+      lastError = err;
+      console.error(`[${logName}] commentary attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
+
+  console.error(`[${logName}] commentary retries exhausted:`, lastError.message);
+  return {
+    debate_reasoning: null,
+    failed: true,
+    lastError,
+  };
+}
+
+async function callCommentaryWithFallback(model, prompt) {
+  const result = await callCommentaryWithRetry(model, prompt);
+  if (!result.failed || !model.fallback || !isTransientProviderError(result.lastError)) {
+    return result;
+  }
+
+  const fallback = {
+    name: model.fallback.apiId,
+    apiId: model.fallback.apiId,
+    endpoint: model.fallback.endpoint || model.endpoint,
+  };
+  console.error(`[${model.name}] commentary primary exhausted with provider error; trying fallback ${fallback.apiId}`);
+
+  const fallbackResult = await callCommentaryWithRetry(fallback, prompt, `${model.name} commentary fallback ${fallback.apiId}`);
+  if (!fallbackResult.failed) {
+    console.error(`[${model.name}] commentary fallback ${fallback.apiId} succeeded`);
+  } else {
+    console.error(`[${model.name}] commentary fallback ${fallback.apiId} failed`);
+  }
   return fallbackResult;
 }
 
@@ -318,42 +456,88 @@ async function getPredictions(matchId) {
     args: [matchId],
   });
 
-  // All 8 predictions already cached — return them
+  // Keep completed prediction sets stable. The v2 blind-then-debate flow applies
+  // only when generating a new match, not retroactively to existing matches.
   if (existingResult.rows.length >= MODELS.length) return existingResult.rows;
 
-  // Partial chain can't be resumed without prior debate context — wipe and restart
+  // Partial rows are not useful to users; restart them with the current flow.
   if (existingResult.rows.length > 0) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
   const shuffled = shuffleArray([...MODELS]);
-  const debateContext = [];
+  const predictionContext = [];
 
   for (let i = 0; i < shuffled.length; i++) {
     const model = shuffled[i];
-    const prompt = i === 0
-      ? buildOpenerPrompt(match)
-      : buildDebatePrompt(match, debateContext);
+    const prompt = buildOpenerPrompt(match);
 
-    const result = await callWithFallback(model, prompt);
+    const result = await callWithFallback(model, prompt, match);
 
     await db.execute({
-      sql: `INSERT INTO predictions (match_id, model_name, pick, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO predictions (match_id, model_name, pick, home_score_90, away_score_90, advancing_team, reasoning, debate_reasoning, forecast_version, failed, order_index, predicted_at, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id, model_name) DO UPDATE SET
               pick          = excluded.pick,
+              home_score_90 = excluded.home_score_90,
+              away_score_90 = excluded.away_score_90,
+              advancing_team = excluded.advancing_team,
               reasoning     = excluded.reasoning,
+              debate_reasoning = excluded.debate_reasoning,
+              forecast_version = excluded.forecast_version,
               failed        = excluded.failed,
               order_index   = excluded.order_index,
               predicted_at  = excluded.predicted_at,
               input_tokens  = excluded.input_tokens,
               output_tokens = excluded.output_tokens
             WHERE excluded.failed = 0`,
-      args: [matchId, model.name, result.pick, result.reasoning, result.failed ? 1 : 0, i, new Date().toISOString(), result.inputTokens, result.outputTokens],
+      args: [
+        matchId,
+        model.name,
+        result.pick,
+        result.home_score_90,
+        result.away_score_90,
+        result.advancing_team,
+        result.reasoning,
+        null,
+        FORECAST_VERSION,
+        result.failed ? 1 : 0,
+        i,
+        new Date().toISOString(),
+        result.inputTokens,
+        result.outputTokens,
+      ],
     });
 
-    debateContext.push({ modelName: model.name, pick: result.pick, reasoning: result.reasoning, failed: result.failed });
-    console.log(`[predict] match ${matchId} — ${model.name} (${i + 1}/${shuffled.length}) pick=${result.pick || 'FAILED'}`);
+    predictionContext.push({
+      modelName: model.name,
+      pick: result.pick,
+      home_score_90: result.home_score_90,
+      away_score_90: result.away_score_90,
+      advancing_team: result.advancing_team,
+      reasoning: result.reasoning,
+      failed: result.failed,
+    });
+    console.log(`[predict] match ${matchId} - ${model.name} (${i + 1}/${shuffled.length}) blind_pick=${result.pick || 'FAILED'}`);
+  }
+
+  for (let i = 0; i < shuffled.length; i++) {
+    const model = shuffled[i];
+    const lockedPrediction = predictionContext[i];
+    if (lockedPrediction.failed) continue;
+
+    const prompt = buildDebatePrompt(match, lockedPrediction, predictionContext);
+    const result = await callCommentaryWithFallback(model, prompt);
+    if (result.failed) continue;
+
+    await db.execute({
+      sql: `UPDATE predictions
+            SET debate_reasoning = ?
+            WHERE match_id = ? AND model_name = ?`,
+      args: [result.debate_reasoning, matchId, model.name],
+    });
+    predictionContext[i].debate_reasoning = result.debate_reasoning;
+    console.log(`[predict] match ${matchId} - ${model.name} (${i + 1}/${shuffled.length}) commentary saved`);
   }
 
   const allResult = await db.execute({
@@ -363,4 +547,4 @@ async function getPredictions(matchId) {
   return allResult.rows;
 }
 
-module.exports = { getPredictions, MODELS };
+module.exports = { getPredictions, MODELS, FORECAST_VERSION };
