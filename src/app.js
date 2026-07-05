@@ -621,6 +621,77 @@ function renderPage({ matches, syncError }) {
 
     .vb-tooltip .model-icon { width: 16px; height: 16px; }
 
+    /* ── Knockout scoreline consensus ── */
+    .scoreline-consensus {
+      margin: -4px 0 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    .scoreline-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .scoreline-row {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .scoreline-chart-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .scoreline-label {
+      font-family: 'Space Mono', monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.4;
+      min-width: 0;
+    }
+
+    .scoreline-count {
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .scoreline-bar-wrap {
+      position: relative;
+    }
+
+    .scoreline-track {
+      width: 100%;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.14);
+      overflow: hidden;
+    }
+
+    .scoreline-fill {
+      height: 100%;
+      min-width: 10px;
+      border-radius: inherit;
+      background: #38BDF8;
+    }
+
+    .scoreline-missing {
+      margin-top: 10px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
     @media (max-width: 600px) {
       body { padding: 28px 14px 60px; }
 
@@ -647,6 +718,11 @@ function renderPage({ matches, syncError }) {
       .vote-bar { height: 36px; }
       .vb-seg { font-size: 13px; }
       .vote-bar-legend { gap: 10px; font-size: 11px; flex-wrap: wrap; }
+      .scoreline-consensus { padding: 14px; }
+      .scoreline-list { gap: 12px; }
+      .scoreline-chart-head { flex-direction: column; gap: 2px; align-items: flex-start; }
+      .scoreline-label { font-size: 12px; }
+      .scoreline-track { height: 10px; }
 
       .placeholder-msg { padding: 28px 16px; }
     }
@@ -793,6 +869,82 @@ function renderPage({ matches, syncError }) {
       '</div>';
     }
 
+    function isKnockoutMatch(match, predictions) {
+      if (match && match.type && match.type !== 'group') return true;
+      return predictions.some(function (p) { return hasKnockoutDetails(p); });
+    }
+
+    function scorelineLabel(p, home, away) {
+      var score = esc(p.home_score_90) + '-' + esc(p.away_score_90);
+      if (p.pick === 'draw') {
+        return 'Draw, ' + score + ', ' + esc(sideName(p.advancing_team, home, away)) + ' advance';
+      }
+      return esc(sideName(p.pick, home, away)) + ' win, ' + score;
+    }
+
+    function renderScorelineConsensus(predictions, match, home, away) {
+      if (!isKnockoutMatch(match, predictions)) return '';
+
+      var groups = {};
+      var missing = 0;
+
+      predictions.forEach(function (p) {
+        if (p.failed || !hasKnockoutDetails(p)) {
+          missing++;
+          return;
+        }
+
+        var key = [
+          p.pick,
+          p.home_score_90,
+          p.away_score_90,
+          p.pick === 'draw' ? p.advancing_team : ''
+        ].join('|');
+
+        if (!groups[key]) {
+          groups[key] = {
+            label: scorelineLabel(p, home, away),
+            models: []
+          };
+        }
+        groups[key].models.push(p.model_name);
+      });
+
+      var rows = Object.keys(groups).map(function (key) { return groups[key]; })
+        .sort(function (a, b) {
+          return b.models.length - a.models.length || a.label.localeCompare(b.label);
+        });
+      if (!rows.length) return '';
+
+      var validTotal = rows.reduce(function (sum, row) { return sum + row.models.length; }, 0);
+
+      var rowHtml = rows.map(function (row) {
+        var pct = validTotal > 0 ? (row.models.length / validTotal) * 100 : 0;
+        var data = esc(JSON.stringify(row.models));
+        return '<div class="scoreline-row" data-voters="' + data + '">' +
+          '<div class="scoreline-chart-head">' +
+            '<div class="scoreline-label">' + row.label + '</div>' +
+            '<div class="scoreline-count">' + row.models.length + '/' + validTotal + '</div>' +
+          '</div>' +
+          '<div class="scoreline-bar-wrap">' +
+            '<div class="scoreline-track" aria-hidden="true">' +
+              '<div class="scoreline-fill" style="width:' + pct.toFixed(1) + '%"></div>' +
+            '</div>' +
+            '<div class="vb-tooltip"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+
+      var missingHtml = missing > 0
+        ? '<div class="scoreline-missing">' + missing + ' model' + (missing === 1 ? '' : 's') + ' did not provide a score.</div>'
+        : '';
+
+      return '<div class="scoreline-consensus">' +
+        (rowHtml ? '<div class="scoreline-list">' + rowHtml + '</div>' : '') +
+        missingHtml +
+      '</div>';
+    }
+
     function renderBubbles(predictions, match, home, away) {
       var actualResult = deriveResult(match);
 
@@ -827,6 +979,7 @@ function renderPage({ matches, syncError }) {
         .join('');
 
       return renderVoteBar(predictions, home, away) +
+        renderScorelineConsensus(predictions, match, home, away) +
         '<div class="chat-feed">' + bubbles + '</div>';
     }
 
@@ -953,21 +1106,31 @@ function renderPage({ matches, syncError }) {
       loadPredictions(matchId, home, away);
     }
 
-    /* ── Vote bar tooltips (delegated once to area) ── */
+    /* ── Consensus tooltips (delegated once to area) ── */
     var isTouch = false;
     document.addEventListener('touchstart', function () { isTouch = true; }, { once: true });
 
     function tooltipFor(container) { return container.querySelector('.vb-tooltip'); }
 
-    function showTooltip(seg) {
-      var container = seg.closest('.vote-bar-container');
+    function tooltipTriggerFrom(target) {
+      return target.closest('.vb-seg, .scoreline-row');
+    }
+
+    function tooltipContainerFor(trigger) {
+      return trigger.classList.contains('vb-seg')
+        ? trigger.closest('.vote-bar-container')
+        : trigger.querySelector('.scoreline-bar-wrap');
+    }
+
+    function showTooltip(trigger) {
+      var container = tooltipContainerFor(trigger);
       var tooltip   = tooltipFor(container);
-      var names     = JSON.parse(seg.getAttribute('data-voters') || '[]');
+      var names     = JSON.parse(trigger.getAttribute('data-voters') || '[]');
       tooltip.innerHTML = '<ul>' + names.map(function (n) {
         return '<li>' + modelIcon(n) + esc(n) + '</li>';
       }).join('') + '</ul>';
       var cRect = container.getBoundingClientRect();
-      var sRect = seg.getBoundingClientRect();
+      var sRect = trigger.getBoundingClientRect();
       tooltip.style.left = (sRect.left + sRect.width / 2 - cRect.left) + 'px';
       tooltip.classList.add('active');
     }
@@ -978,27 +1141,27 @@ function renderPage({ matches, syncError }) {
 
     area.addEventListener('mouseover', function (e) {
       if (isTouch) return;
-      var seg = e.target.closest('.vb-seg');
-      if (!seg) return;
-      showTooltip(seg);
+      var trigger = tooltipTriggerFrom(e.target);
+      if (!trigger) return;
+      showTooltip(trigger);
     });
 
     area.addEventListener('mouseout', function (e) {
       if (isTouch) return;
-      var seg = e.target.closest('.vb-seg');
-      if (!seg) return;
-      if (!seg.contains(e.relatedTarget)) hideAll();
+      var trigger = tooltipTriggerFrom(e.target);
+      if (!trigger) return;
+      if (!trigger.contains(e.relatedTarget)) hideAll();
     });
 
     area.addEventListener('click', function (e) {
       if (!isTouch) return;
-      var seg = e.target.closest('.vb-seg');
-      if (!seg) { hideAll(); return; }
-      var container = seg.closest('.vote-bar-container');
+      var trigger = tooltipTriggerFrom(e.target);
+      if (!trigger) { hideAll(); return; }
+      var container = tooltipContainerFor(trigger);
       var tooltip   = tooltipFor(container);
       var wasActive = tooltip.classList.contains('active');
       hideAll();
-      if (!wasActive) showTooltip(seg);
+      if (!wasActive) showTooltip(trigger);
     });
 
     /* ── Init ── */
@@ -1252,7 +1415,7 @@ app.get('/api/predictions/:matchId', async (req, res) => {
   try {
     const [predResult, matchResult] = await Promise.all([
       db.execute({ sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC', args: [matchId] }),
-      db.execute({ sql: 'SELECT id, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
+      db.execute({ sql: 'SELECT id, type, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
     if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });
     res.json({ predictions: predResult.rows, match: matchResult.rows[0] || null });
@@ -2324,7 +2487,7 @@ app.post('/api/predict/:matchId', async (req, res) => {
   let match;
   try {
     const r = await db.execute({
-      sql: 'SELECT id, home_team_id, away_team_id, finished, home_score, away_score FROM matches WHERE id = ?',
+      sql: 'SELECT id, type, home_team_id, away_team_id, finished, home_score, away_score FROM matches WHERE id = ?',
       args: [matchId],
     });
     if (!r.rows.length) return res.status(404).json({ error: 'Match not found' });
