@@ -39,6 +39,8 @@ async function migrate() {
       away_score_90  INTEGER,
       advancing_team TEXT    CHECK (advancing_team IN ('home', 'away')),
       reasoning    TEXT,
+      debate_reasoning TEXT,
+      forecast_version INTEGER NOT NULL DEFAULT 1,
       failed       INTEGER NOT NULL DEFAULT 0,
       order_index  INTEGER,
       predicted_at TEXT    NOT NULL,
@@ -77,6 +79,18 @@ async function migrate() {
 
   try {
     await db.execute(`ALTER TABLE predictions ADD COLUMN advancing_team TEXT`);
+  } catch (e) {
+    if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+  }
+
+  try {
+    await db.execute(`ALTER TABLE predictions ADD COLUMN debate_reasoning TEXT`);
+  } catch (e) {
+    if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+  }
+
+  try {
+    await db.execute(`ALTER TABLE predictions ADD COLUMN forecast_version INTEGER NOT NULL DEFAULT 1`);
   } catch (e) {
     if (!e.message.toLowerCase().includes('duplicate column')) throw e;
   }

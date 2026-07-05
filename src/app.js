@@ -964,9 +964,10 @@ function renderPage({ matches, syncError }) {
               ? '<span class="pick-badge pick-failed">Prediction unavailable</span>'
               : pickBadge(p.pick, home, away)) + iconHtml + '</div>';
 
+          var displayReason = p.debate_reasoning || p.reasoning || '';
           var reasonHtml = p.failed
             ? '<span class="bubble-reason" style="font-style:italic">Prediction unavailable</span>'
-            : '<span class="bubble-reason">' + esc(p.reasoning || '') + '</span>';
+            : '<span class="bubble-reason">' + esc(displayReason) + '</span>';
 
           return '<div class="chat-row ' + side + '">' +
             '<div class="chat-sender">' + modelIcon(p.model_name) + esc(p.model_name) + '</div>' +
@@ -987,7 +988,7 @@ function renderPage({ matches, syncError }) {
       area.innerHTML =
         '<div class="spinner-wrap">' +
           '<div class="spinner"></div>' +
-          '<p class="spinner-msg">' + (generating ? 'Models are debating — this takes up to 2 minutes…' : 'Loading predictions…') + '</p>' +
+          '<p class="spinner-msg">' + (generating ? 'Models are predicting, then debating - this can take a few minutes...' : 'Loading predictions...') + '</p>' +
         '</div>';
     }
 

@@ -1,6 +1,7 @@
 const db = require('./db');
 
 const ZEN_BASE = process.env.OPENCODE_ZEN_BASE_URL || 'https://opencode.ai/zen/v1';
+const FORECAST_VERSION = 2;
 
 const MODELS = [
   { name: 'minimax-m2.7',      apiId: 'minimax-m2.7',      endpoint: 'chat' },
@@ -98,13 +99,12 @@ function buildOpenerPrompt(match) {
 
 ${buildBaseSection(match)}
 ${knockoutText ? `\n${knockoutText}\n` : ''}
-You are first in the council, so make the opening forecast. Keep reasoning to 3 sentences max.
+Make your forecast independently. You cannot see any other council member's forecast yet. Keep reasoning to 3 sentences max.
 
 ${buildOutputInstructions(match)}`;
 }
 
-function buildDebatePrompt(match, priorContext) {
-  const knockoutText = buildKnockoutText(match);
+function formatCouncilContext(match, predictions) {
   const home = match.home_team || match.home_team_label || 'Home';
   const away = match.away_team || match.away_team_label || 'Away';
 
@@ -114,7 +114,7 @@ function buildDebatePrompt(match, priorContext) {
     return side;
   }
 
-  const contextBlock = priorContext.map((entry, i) => {
+  return predictions.map((entry, i) => {
     if (entry.failed) {
       return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
@@ -123,19 +123,26 @@ function buildDebatePrompt(match, priorContext) {
     }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
+}
 
-  return `${buildCorePrompt()}
+function buildDebatePrompt(match, lockedPrediction, allPredictions) {
+  const contextBlock = formatCouncilContext(match, allPredictions);
+  const ownPick = lockedPrediction.failed ? 'FAILED' : lockedPrediction.pick.toUpperCase();
 
+  return `You are participating in a light council discussion after all forecasts have already been locked.
 ${buildBaseSection(match)}
-${knockoutText ? `\n${knockoutText}\n` : ''}
-Before considering the council context, privately make your own pick from the match data and football evidence. Then read the council context as commentary, not as votes. Do not follow or oppose the council just because of consensus; prior picks are claims to evaluate.
+
+Your locked forecast is ${ownPick}. You must not change it, replace it, or output a new pick.
 
 ### THE COUNCIL SO FAR
 ${contextBlock}
 
-Now give your forecast. You may briefly agree, disagree, or banter with the council after your pick is fixed. Keep reasoning to 3 sentences max.
+Write a concise council-style reaction in no more than 3 sentences. You may agree, disagree, or banter with the council, but the locked forecast remains unchanged.
 
-${buildOutputInstructions(match)}`;
+Respond with ONLY a JSON object with exactly one key: "commentary".
+{
+  "commentary": "your concise reaction"
+}`;
 }
 
 function parseResponse(text) {
@@ -380,6 +387,59 @@ async function callWithFallback(model, prompt, match) {
   return fallbackResult;
 }
 
+async function callCommentaryWithRetry(model, prompt, logName = model.name) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+    }
+    try {
+      const { text } = await callModel(model, prompt);
+      const result = parseResponse(text);
+      if (typeof result.commentary !== 'string' || !result.commentary.trim()) {
+        throw new Error('Missing or empty commentary');
+      }
+      return {
+        debate_reasoning: result.commentary.trim(),
+        failed: false,
+      };
+    } catch (err) {
+      lastError = err;
+      console.error(`[${logName}] commentary attempt ${attempt + 1} failed:`, err.message);
+    }
+  }
+
+  console.error(`[${logName}] commentary retries exhausted:`, lastError.message);
+  return {
+    debate_reasoning: null,
+    failed: true,
+    lastError,
+  };
+}
+
+async function callCommentaryWithFallback(model, prompt) {
+  const result = await callCommentaryWithRetry(model, prompt);
+  if (!result.failed || !model.fallback || !isTransientProviderError(result.lastError)) {
+    return result;
+  }
+
+  const fallback = {
+    name: model.fallback.apiId,
+    apiId: model.fallback.apiId,
+    endpoint: model.fallback.endpoint || model.endpoint,
+  };
+  console.error(`[${model.name}] commentary primary exhausted with provider error; trying fallback ${fallback.apiId}`);
+
+  const fallbackResult = await callCommentaryWithRetry(fallback, prompt, `${model.name} commentary fallback ${fallback.apiId}`);
+  if (!fallbackResult.failed) {
+    console.error(`[${model.name}] commentary fallback ${fallback.apiId} succeeded`);
+  } else {
+    console.error(`[${model.name}] commentary fallback ${fallback.apiId} failed`);
+  }
+  return fallbackResult;
+}
+
 async function getPredictions(matchId) {
   const matchResult = await db.execute({
     sql: `SELECT m.*, s.name AS stadium_name, s.city AS stadium_city
@@ -396,34 +456,35 @@ async function getPredictions(matchId) {
     args: [matchId],
   });
 
-  // Keep existing completed prediction sets stable, even if they used an older prompt.
+  // Keep completed prediction sets stable. The v2 blind-then-debate flow applies
+  // only when generating a new match, not retroactively to existing matches.
   if (existingResult.rows.length >= MODELS.length) return existingResult.rows;
 
-  // Partial chains can't be resumed without prior debate context — wipe and restart.
+  // Partial rows are not useful to users; restart them with the current flow.
   if (existingResult.rows.length > 0) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
   const shuffled = shuffleArray([...MODELS]);
-  const debateContext = [];
+  const predictionContext = [];
 
   for (let i = 0; i < shuffled.length; i++) {
     const model = shuffled[i];
-    const prompt = i === 0
-      ? buildOpenerPrompt(match)
-      : buildDebatePrompt(match, debateContext);
+    const prompt = buildOpenerPrompt(match);
 
     const result = await callWithFallback(model, prompt, match);
 
     await db.execute({
-      sql: `INSERT INTO predictions (match_id, model_name, pick, home_score_90, away_score_90, advancing_team, reasoning, failed, order_index, predicted_at, input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO predictions (match_id, model_name, pick, home_score_90, away_score_90, advancing_team, reasoning, debate_reasoning, forecast_version, failed, order_index, predicted_at, input_tokens, output_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id, model_name) DO UPDATE SET
               pick          = excluded.pick,
               home_score_90 = excluded.home_score_90,
               away_score_90 = excluded.away_score_90,
               advancing_team = excluded.advancing_team,
               reasoning     = excluded.reasoning,
+              debate_reasoning = excluded.debate_reasoning,
+              forecast_version = excluded.forecast_version,
               failed        = excluded.failed,
               order_index   = excluded.order_index,
               predicted_at  = excluded.predicted_at,
@@ -438,6 +499,8 @@ async function getPredictions(matchId) {
         result.away_score_90,
         result.advancing_team,
         result.reasoning,
+        null,
+        FORECAST_VERSION,
         result.failed ? 1 : 0,
         i,
         new Date().toISOString(),
@@ -446,7 +509,7 @@ async function getPredictions(matchId) {
       ],
     });
 
-    debateContext.push({
+    predictionContext.push({
       modelName: model.name,
       pick: result.pick,
       home_score_90: result.home_score_90,
@@ -455,7 +518,26 @@ async function getPredictions(matchId) {
       reasoning: result.reasoning,
       failed: result.failed,
     });
-    console.log(`[predict] match ${matchId} — ${model.name} (${i + 1}/${shuffled.length}) pick=${result.pick || 'FAILED'}`);
+    console.log(`[predict] match ${matchId} - ${model.name} (${i + 1}/${shuffled.length}) blind_pick=${result.pick || 'FAILED'}`);
+  }
+
+  for (let i = 0; i < shuffled.length; i++) {
+    const model = shuffled[i];
+    const lockedPrediction = predictionContext[i];
+    if (lockedPrediction.failed) continue;
+
+    const prompt = buildDebatePrompt(match, lockedPrediction, predictionContext);
+    const result = await callCommentaryWithFallback(model, prompt);
+    if (result.failed) continue;
+
+    await db.execute({
+      sql: `UPDATE predictions
+            SET debate_reasoning = ?
+            WHERE match_id = ? AND model_name = ?`,
+      args: [result.debate_reasoning, matchId, model.name],
+    });
+    predictionContext[i].debate_reasoning = result.debate_reasoning;
+    console.log(`[predict] match ${matchId} - ${model.name} (${i + 1}/${shuffled.length}) commentary saved`);
   }
 
   const allResult = await db.execute({
@@ -465,4 +547,4 @@ async function getPredictions(matchId) {
   return allResult.rows;
 }
 
-module.exports = { getPredictions, MODELS };
+module.exports = { getPredictions, MODELS, FORECAST_VERSION };
