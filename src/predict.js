@@ -80,13 +80,7 @@ For "home_score_90" and "away_score_90", output non-negative integers from 0 to 
 The score must match "pick": home_score_90 > away_score_90 for "home", away_score_90 > home_score_90 for "away", and equal scores for "draw".
 For "advancing_team", output exactly "home" or "away". If "pick" is "home" or "away", "advancing_team" must be the same side.
 In "reasoning", explain both the 90-minute forecast and the advancement logic in no more than 3 sentences.
-{
-  "pick": "draw",
-  "home_score_90": 1,
-  "away_score_90": 1,
-  "advancing_team": "home",
-  "reasoning": "your concise council-style reasoning"
-}`;
+Choose the score from the match evidence. Do not copy an example score or reuse a previous council member's score by default.`;
   }
 
   return `Respond with ONLY a JSON object. Return exactly two keys: "pick" and "reasoning". Do not include markdown or explanation outside the JSON.
@@ -124,11 +118,8 @@ function buildDebatePrompt(match, priorContext) {
     if (entry.failed) {
       return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
-    if (isKnockout(match) &&
-        entry.home_score_90 != null &&
-        entry.away_score_90 != null &&
-        entry.advancing_team) {
-      return `${i + 1}. ${entry.modelName} predicts: ${entry.pick.toUpperCase()}, 90-minute score ${home} ${entry.home_score_90}-${entry.away_score_90} ${away}, advances: ${sideName(entry.advancing_team)}\n"${entry.reasoning}"`;
+    if (isKnockout(match) && entry.advancing_team) {
+      return `${i + 1}. ${entry.modelName} predicts: ${entry.pick.toUpperCase()}, advances: ${sideName(entry.advancing_team)}\n"${entry.reasoning}"`;
     }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
@@ -405,10 +396,10 @@ async function getPredictions(matchId) {
     args: [matchId],
   });
 
-  // All 8 predictions already cached — return them
+  // Keep existing completed prediction sets stable, even if they used an older prompt.
   if (existingResult.rows.length >= MODELS.length) return existingResult.rows;
 
-  // Partial chain can't be resumed without prior debate context — wipe and restart
+  // Partial chains can't be resumed without prior debate context — wipe and restart.
   if (existingResult.rows.length > 0) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
