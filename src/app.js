@@ -924,7 +924,7 @@ function renderPage({ matches, syncError }) {
         return '<div class="scoreline-row" data-voters="' + data + '">' +
           '<div class="scoreline-chart-head">' +
             '<div class="scoreline-label">' + row.label + '</div>' +
-            '<div class="scoreline-count">' + row.models.length + '/' + validTotal + '</div>' +
+            '<div class="scoreline-count">' + row.models.length + '</div>' +
           '</div>' +
           '<div class="scoreline-bar-wrap">' +
             '<div class="scoreline-track" aria-hidden="true">' +
