@@ -46,6 +46,26 @@ async function migrate() {
       predicted_at TEXT    NOT NULL,
       UNIQUE (match_id, model_name)
     )`,
+
+    `CREATE TABLE IF NOT EXISTS champion_runs (
+      id           INTEGER PRIMARY KEY CHECK (id = 1),
+      context_json TEXT    NOT NULL,
+      created_at   TEXT    NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS champion_predictions (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id        INTEGER NOT NULL DEFAULT 1,
+      model_name    TEXT    NOT NULL UNIQUE,
+      finalist_1    TEXT    NOT NULL,
+      finalist_2    TEXT    NOT NULL,
+      champion      TEXT    NOT NULL,
+      reasoning     TEXT    NOT NULL,
+      order_index   INTEGER NOT NULL,
+      predicted_at  TEXT    NOT NULL,
+      input_tokens  INTEGER,
+      output_tokens INTEGER
+    )`,
   ]);
 
   // Add order_index to existing predictions tables and wipe rows for debate format regeneration.
