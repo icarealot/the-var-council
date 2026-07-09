@@ -3,6 +3,7 @@ const express = require('express');
 const db = require('./db');
 const sync = require('./sync');
 const { getPredictions } = require('./predict');
+const { getChampionPredictions, readChampionPredictions } = require('./champion');
 
 const app = express();
 app.use(express.json());
@@ -742,6 +743,7 @@ function renderPage({ matches, syncError }) {
     <a href="/leaderboard">Leaderboard</a>
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -1726,6 +1728,7 @@ function renderLeaderboardPage() {
     <a href="/leaderboard" class="active">Leaderboard</a>
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2199,6 +2202,7 @@ function renderTablesPage(groups) {
     <a href="/leaderboard">Leaderboard</a>
     <a href="/tables" class="active">Tables</a>
     <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2448,6 +2452,7 @@ function renderKnockoutPage(matches) {
     <a href="/leaderboard">Leaderboard</a>
     <a href="/tables">Tables</a>
     <a href="/knockout" class="active">Knockout</a>
+    <a href="/champion">Champion</a>
   </nav>
   <main style="width:100%;max-width:740px;">
     ${mainContent}
@@ -2467,6 +2472,187 @@ function renderKnockoutPage(matches) {
 </html>`;
 }
 
+function renderChampionPage() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Var Council — Champion</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0F172A; --surface: #1E293B; --surface-2: #273549; --border: #334155;
+      --accent: #38BDF8; --accent-dim: rgba(56,189,248,.15); --text: #F1F5F9;
+      --text-muted: #94A3B8; --purple: #A78BFA; --radius: 10px;
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Space Grotesk',system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:48px 20px 80px; }
+    .site-header { width:100%; max-width:740px; margin-bottom:48px; display:flex; flex-direction:column; gap:6px; }
+    .site-header .eyebrow { font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); }
+    .site-header h1 { font-size:clamp(28px,5vw,42px); font-weight:700; line-height:1.1; letter-spacing:-.02em; }
+    .site-header h1 em { font-style:normal; color:var(--accent); }
+    .site-header .subtitle { font-size:14px; color:var(--text-muted); margin-top:4px; }
+    .page-nav { width:100%; max-width:740px; margin-bottom:24px; display:flex; gap:8px; flex-wrap:wrap; }
+    .page-nav a { display:inline-flex; align-items:center; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); text-decoration:none; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; transition:background .15s; }
+    .page-nav a:hover { background:var(--accent-dim); }
+    .page-nav a.active { background:var(--accent); color:#0F172A; }
+    main { width:100%; max-width:740px; }
+    .spinner-wrap, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
+    .spinner { display:inline-block; width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:16px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner-msg, .error-box { color:var(--text-muted); font-size:14px; }
+    .consensus { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:24px; }
+    .chart-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px; }
+    .chart-title { font-family:'Space Mono',monospace; font-size:12px; font-weight:700; color:var(--text); margin-bottom:14px; text-transform:uppercase; letter-spacing:.06em; }
+    .chart-list { display:flex; flex-direction:column; gap:12px; }
+    .chart-row { position:relative; cursor:pointer; }
+    .chart-head { display:flex; justify-content:space-between; gap:8px; margin-bottom:5px; font-size:12px; }
+    .chart-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .chart-count { font-family:'Space Mono',monospace; color:var(--text-muted); }
+    .chart-track { height:9px; border-radius:99px; background:rgba(148,163,184,.14); overflow:hidden; }
+    .chart-fill { height:100%; min-width:8px; border-radius:inherit; background:var(--accent); }
+    .finalist-chart .chart-fill { background:var(--purple); }
+    .tooltip { display:none; position:absolute; bottom:calc(100% + 7px); left:50%; transform:translateX(-50%); z-index:10; background:#0F172A; border:1px solid var(--border); border-radius:8px; padding:8px 10px; white-space:nowrap; font-size:11px; }
+    .chart-row:hover .tooltip, .chart-row:focus .tooltip { display:block; }
+    .tooltip-line { display:flex; align-items:center; gap:5px; padding:2px 0; }
+    .chat-feed { display:flex; flex-direction:column; gap:16px; }
+    .chat-row { display:flex; flex-direction:column; max-width:72%; }
+    .chat-row.left { align-self:flex-start; }
+    .chat-row.right { align-self:flex-end; align-items:flex-end; }
+    .chat-sender { font-family:'Space Mono',monospace; font-size:14px; font-weight:700; letter-spacing:.04em; margin-bottom:4px; padding:0 4px; display:flex; align-items:center; gap:6px; }
+    .model-icon { width:16px; height:16px; flex-shrink:0; }
+    .chat-bubble { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+    .chat-row.left .chat-bubble { border-top-left-radius:4px; }
+    .chat-row.right .chat-bubble { border-top-right-radius:4px; }
+    .forecast-line { display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-family:'Space Mono',monospace; font-size:12px; }
+    .forecast-label { color:var(--text-muted); }
+    .bubble-reason { font-size:15px; color:var(--text-muted); line-height:1.6; }
+    @media (max-width:600px) {
+      body { padding:28px 14px 60px; }
+      .site-header { margin-bottom:32px; }
+      .chat-row { max-width:88%; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="eyebrow">THE VAR COUNCIL</p>
+    <h1><em>Champion</em></h1>
+    <p class="subtitle">Eight models predict the World Cup finalists and champion.</p>
+  </header>
+  <nav class="page-nav">
+    <a href="/">Predictions</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables">Tables</a>
+    <a href="/knockout">Knockout</a>
+    <a href="/champion" class="active">Champion</a>
+  </nav>
+  <main id="champion-area">
+    <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Models are predicting the finalists and champion — this can take a few minutes...</p></div>
+  </main>
+  <script>
+  (function () {
+    var area = document.getElementById('champion-area');
+    var ICONS = {
+      minimax:'minimax-color.svg', glm:'zai.svg', kimi:'kimi-color.svg',
+      qwen:'qwen-color.svg', deepseek:'deepseek-color.svg',
+      claude:'claude-color.svg', gemini:'google-color.svg', gpt:'openai.svg'
+    };
+    function esc(value) {
+      return String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function icon(name) {
+      var lower = String(name || '').toLowerCase();
+      for (var prefix in ICONS) {
+        if (lower.indexOf(prefix) === 0) return '<img class="model-icon" src="/icons/' + ICONS[prefix] + '" alt="">';
+      }
+      return '';
+    }
+    function team(name) {
+      return esc(name);
+    }
+    function chart(predictions, key, title, className) {
+      var groups = {};
+      predictions.forEach(function (prediction) {
+        var values = key === 'finalists'
+          ? [prediction.finalist_1, prediction.finalist_2]
+          : [prediction.champion];
+        values.forEach(function (name) {
+          if (!groups[name]) groups[name] = [];
+          groups[name].push(prediction.model_name);
+        });
+      });
+      var rows = Object.keys(groups).map(function (name) {
+        return { name:name, models:groups[name] };
+      }).sort(function (a,b) {
+        return b.models.length - a.models.length || a.name.localeCompare(b.name);
+      });
+      var max = rows.length ? rows[0].models.length : 1;
+      return '<section class="chart-card ' + className + '"><h2 class="chart-title">' + title + '</h2><div class="chart-list">' +
+        rows.map(function (row) {
+          var tooltip = row.models.map(function (name) {
+            return '<span class="tooltip-line">' + icon(name) + esc(name) + '</span>';
+          }).join('');
+          return '<div class="chart-row" tabindex="0"><div class="chart-head"><span class="chart-name">' +
+            esc(row.name) + '</span><span class="chart-count">' + row.models.length + '</span></div>' +
+            '<div class="chart-track"><div class="chart-fill" style="width:' +
+            ((row.models.length / max) * 100).toFixed(1) + '%"></div></div><div class="tooltip">' +
+            tooltip + '</div></div>';
+        }).join('') + '</div></section>';
+    }
+    function render(predictions) {
+      var bubbles = predictions.map(function (prediction, index) {
+        return '<div class="chat-row ' + (index % 2 === 0 ? 'left' : 'right') + '">' +
+          '<div class="chat-sender">' + icon(prediction.model_name) + esc(prediction.model_name) + '</div>' +
+          '<div class="chat-bubble"><div class="forecast-line"><span class="forecast-label">Final:</span>' +
+          team(prediction.finalist_1) + '<span>vs</span>' + team(prediction.finalist_2) +
+          '</div><div class="forecast-line"><span class="forecast-label">Champion:</span>' +
+          team(prediction.champion) + '</div><span class="bubble-reason">' +
+          esc(prediction.reasoning) + '</span></div></div>';
+      }).join('');
+      area.innerHTML = '<div class="consensus">' +
+        chart(predictions, 'champion', 'Champion votes', '') +
+        chart(predictions, 'finalists', 'Finalist picks', 'finalist-chart') +
+        '</div><div class="chat-feed">' + bubbles + '</div>';
+    }
+    function retry() {
+      window.setTimeout(load, 5000);
+    }
+    async function load() {
+      try {
+        var current = await fetch('/api/champion', { cache:'no-store' });
+        if (current.ok) {
+          var currentData = await current.json();
+          if (currentData.predictions.length >= currentData.total) {
+            render(currentData.predictions);
+            return;
+          }
+        }
+        var generated = await fetch('/api/champion/generate', { method:'POST' });
+        if (!generated.ok) throw new Error('HTTP ' + generated.status);
+        var data = await generated.json();
+        if (data.predictions.length >= data.total) {
+          render(data.predictions);
+          return;
+        }
+        retry();
+      } catch (error) {
+        area.innerHTML = '<div class="error-box">Could not complete all champion predictions. Retrying automatically...</div>';
+        retry();
+      }
+    }
+    load();
+  })();
+  </script>
+</body>
+</html>`;
+}
+
 app.get('/knockout', async (_req, res) => {
   try {
     const matches = await getKnockoutMatches();
@@ -2474,6 +2660,36 @@ app.get('/knockout', async (_req, res) => {
   } catch (err) {
     console.error('Knockout error:', err);
     res.status(500).send('Error loading knockout bracket');
+  }
+});
+
+app.get('/champion', (_req, res) => {
+  res.send(renderChampionPage());
+});
+
+app.get('/api/champion', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await readChampionPredictions());
+  } catch (err) {
+    console.error('Champion DB error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+let championInFlight = null;
+
+app.post('/api/champion/generate', async (_req, res) => {
+  try {
+    if (!championInFlight) {
+      championInFlight = getChampionPredictions().finally(() => {
+        championInFlight = null;
+      });
+    }
+    res.json(await championInFlight);
+  } catch (err) {
+    console.error('Champion prediction error:', err);
+    res.status(422).json({ error: err.message });
   }
 });
 

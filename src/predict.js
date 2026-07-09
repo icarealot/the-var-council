@@ -547,4 +547,11 @@ async function getPredictions(matchId) {
   return allResult.rows;
 }
 
-module.exports = { getPredictions, MODELS, FORECAST_VERSION };
+module.exports = {
+  getPredictions,
+  MODELS,
+  FORECAST_VERSION,
+  callModel,
+  parseResponse,
+  isTransientProviderError,
+};
