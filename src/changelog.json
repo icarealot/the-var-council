@@ -1,0 +1,77 @@
+[
+  {
+    "date": "2026-07-09",
+    "entries": [
+      "Added tournament-wide finalist and champion forecasts from the council."
+    ]
+  },
+  {
+    "date": "2026-07-05",
+    "entries": [
+      "Clarified knockout scoreline charts by showing how many models backed each result.",
+      "Locked forecasts before the debate so commentary cannot change a model's pick.",
+      "Added a chart showing the council's preferred knockout scorelines.",
+      "Reduced score anchoring to encourage more independent knockout predictions."
+    ]
+  },
+  {
+    "date": "2026-07-04",
+    "entries": [
+      "Added predicted scorelines and advancing teams for knockout matches."
+    ]
+  },
+  {
+    "date": "2026-07-03",
+    "entries": [
+      "Refined prediction prompts to put forecast accuracy ahead of commentary.",
+      "Kept Qwen predictions available during temporary provider errors.",
+      "Allowed models to predict draws in knockout matches.",
+      "Ignored invalid incoming score values to keep match data reliable."
+    ]
+  },
+  {
+    "date": "2026-06-25",
+    "entries": [
+      "Improved the selected-match layout and made flags render consistently."
+    ]
+  },
+  {
+    "date": "2026-06-24",
+    "entries": [
+      "Added per-model and total API spending to the leaderboard.",
+      "Fixed stale prediction results and strengthened handling of external match data.",
+      "Added a group filter to the standings page.",
+      "Replaced emoji flags with reliable flag images across browsers."
+    ]
+  },
+  {
+    "date": "2026-06-23",
+    "entries": [
+      "Simplified model bubbles by removing recent prediction-history indicators.",
+      "Fixed small-screen table overlap and match-picker dismissal.",
+      "Added a knockout tab with a round-by-round bracket view.",
+      "Added each model's five most recent prediction outcomes."
+    ]
+  },
+  {
+    "date": "2026-06-22",
+    "entries": [
+      "Added group-stage standings for all World Cup groups.",
+      "Added a persistent tab bar that shows the current page."
+    ]
+  },
+  {
+    "date": "2026-06-19",
+    "entries": [
+      "Made it possible to see which models backed each vote-bar result.",
+      "Added a council debate flow where models can react to earlier picks."
+    ]
+  },
+  {
+    "date": "2026-06-18",
+    "entries": [
+      "Redesigned predictions as chat bubbles with model icons and a vote bar.",
+      "Launched The VAR Council with match syncing and model predictions."
+    ]
+  }
+]
