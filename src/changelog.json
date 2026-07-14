@@ -1,5 +1,12 @@
 [
   {
+    "date": "2026-07-14",
+    "entries": [
+      "Added round-specific and onward-bracket context to knockout forecasts.",
+      "Clarified third-place playoff predictions so models select the team finishing third, not an advancing team."
+    ]
+  },
+  {
     "date": "2026-07-09",
     "entries": [
       "Added tournament-wide finalist and champion forecasts from the council."
