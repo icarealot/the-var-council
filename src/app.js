@@ -4,6 +4,7 @@ const db = require('./db');
 const sync = require('./sync');
 const { getPredictions } = require('./predict');
 const { getChampionPredictions, readChampionPredictions } = require('./champion');
+const changelog = require('./changelog.json');
 
 const app = express();
 app.use(express.json());
@@ -85,6 +86,23 @@ function escHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderPageTitle(title, changelogActive = false) {
+  const icon = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"></circle>
+    <path d="M12 7v5l3 2"></path>
+  </svg>`;
+  const sharedStyle = 'width:38px;height:38px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid #38BDF8;border-radius:50%;color:#38BDF8;';
+
+  const control = changelogActive
+    ? `<span aria-label="Changelog" aria-current="page" style="${sharedStyle}background:#38BDF8;color:#0F172A;">${icon}</span>`
+    : `<a href="/changelog" aria-label="View changelog" title="View changelog" style="${sharedStyle}text-decoration:none;">${icon}</a>`;
+
+  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+    <h1><em>${escHtml(title)}</em></h1>
+    ${control}
+  </div>`;
 }
 
 function renderPage({ matches, syncError }) {
@@ -732,7 +750,7 @@ function renderPage({ matches, syncError }) {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Predictions</em></h1>
+    ${renderPageTitle('Predictions')}
     <p class="subtitle">World Cup 2026 — 8 language models predict every match. Select one to see their picks.</p>
   </header>
 
@@ -813,13 +831,14 @@ function renderPage({ matches, syncError }) {
         (p.advancing_team === 'home' || p.advancing_team === 'away');
     }
 
-    function renderKnockoutDetails(p, home, away, iconHtml) {
+    function renderKnockoutDetails(p, match, home, away, iconHtml) {
       var advance = sideName(p.advancing_team, home, away);
+      var outcomeLabel = match && match.type === 'third' ? 'Finishes third:' : 'Advance:';
       return '<div class="bubble-ko-lines">' +
         '<div class="bubble-ko-line"><span class="bubble-ko-label">90&#39;:</span><span>' +
           esc(home) + ' ' + esc(p.home_score_90) + '&ndash;' + esc(p.away_score_90) + ' ' + esc(away) +
         '</span>' + iconHtml + '</div>' +
-        '<div class="bubble-ko-line"><span class="bubble-ko-label">Advance:</span><span>' + esc(advance) + '</span></div>' +
+        '<div class="bubble-ko-line"><span class="bubble-ko-label">' + outcomeLabel + '</span><span>' + esc(advance) + '</span></div>' +
       '</div>';
     }
 
@@ -876,10 +895,11 @@ function renderPage({ matches, syncError }) {
       return predictions.some(function (p) { return hasKnockoutDetails(p); });
     }
 
-    function scorelineLabel(p, home, away) {
+    function scorelineLabel(p, match, home, away) {
       var score = esc(p.home_score_90) + '-' + esc(p.away_score_90);
       if (p.pick === 'draw') {
-        return 'Draw, ' + score + ', ' + esc(sideName(p.advancing_team, home, away)) + ' advance';
+        var outcome = match && match.type === 'third' ? ' to finish third' : ' advance';
+        return 'Draw, ' + score + ', ' + esc(sideName(p.advancing_team, home, away)) + outcome;
       }
       return esc(sideName(p.pick, home, away)) + ' win, ' + score;
     }
@@ -905,7 +925,7 @@ function renderPage({ matches, syncError }) {
 
         if (!groups[key]) {
           groups[key] = {
-            label: scorelineLabel(p, home, away),
+            label: scorelineLabel(p, match, home, away),
             models: []
           };
         }
@@ -961,7 +981,7 @@ function renderPage({ matches, syncError }) {
                         : '';
 
           var badgeHtml = hasKnockoutDetails(p) && !p.failed
-            ? renderKnockoutDetails(p, home, away, iconHtml)
+            ? renderKnockoutDetails(p, match, home, away, iconHtml)
             : '<div class="bubble-pick">' + (p.failed
               ? '<span class="pick-badge pick-failed">Prediction unavailable</span>'
               : pickBadge(p.pick, home, away)) + iconHtml + '</div>';
@@ -1318,7 +1338,7 @@ function renderLoadingPage(next) {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Predictions</em></h1>
+    ${renderPageTitle('Predictions')}
     <p class="subtitle">World Cup 2026 — 8 language models predict every match. Select one to see their picks.</p>
   </header>
 
@@ -1719,7 +1739,7 @@ function renderLeaderboardPage() {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Leaderboard</em></h1>
+    ${renderPageTitle('Leaderboard')}
     <p class="subtitle">Ranked by total correct predictions across finished matches.</p>
   </header>
 
@@ -2193,7 +2213,7 @@ function renderTablesPage(groups) {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Tables</em></h1>
+    ${renderPageTitle('Tables')}
     <p class="subtitle">World Cup 2026 group stage standings.</p>
   </header>
 
@@ -2444,7 +2464,7 @@ function renderKnockoutPage(matches) {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Knockout</em></h1>
+    ${renderPageTitle('Knockout')}
     <p class="subtitle">World Cup 2026 knockout stage — one round at a time.</p>
   </header>
   <nav class="page-nav">
@@ -2541,7 +2561,7 @@ function renderChampionPage() {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    <h1><em>Champion</em></h1>
+    ${renderPageTitle('Champion')}
     <p class="subtitle">Eight models predict the World Cup finalists and champion.</p>
   </header>
   <nav class="page-nav">
@@ -2652,6 +2672,92 @@ function renderChampionPage() {
 </body>
 </html>`;
 }
+
+function renderChangelogPage() {
+  const timeline = changelog.length
+    ? changelog.map((group) => {
+        const date = new Date(`${group.date}T00:00:00Z`).toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          timeZone: 'UTC',
+        });
+        const entries = group.entries
+          .map((entry) => `<li>${escHtml(entry)}</li>`)
+          .join('');
+        return `<section class="timeline-group">
+          <h2>${escHtml(date)}</h2>
+          <ul>${entries}</ul>
+        </section>`;
+      }).join('')
+    : '<p class="empty-state">No changelog entries yet.</p>';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Var Council — Changelog</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#0F172A; --surface:#1E293B; --border:#334155; --accent:#38BDF8;
+      --accent-dim:rgba(56,189,248,.15); --text:#F1F5F9; --text-muted:#94A3B8;
+    }
+    body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:48px 20px 80px; }
+    .site-header { width:100%; max-width:740px; margin-bottom:48px; display:flex; flex-direction:column; gap:6px; }
+    .site-header .eyebrow { font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); }
+    .site-header h1 { font-size:clamp(28px,5vw,42px); font-weight:700; line-height:1.1; letter-spacing:-.02em; }
+    .site-header h1 em { font-style:normal; color:var(--accent); }
+    .site-header .subtitle { font-size:14px; color:var(--text-muted); margin-top:4px; }
+    .page-nav { width:100%; max-width:740px; margin-bottom:32px; display:flex; gap:8px; flex-wrap:wrap; }
+    .page-nav a { display:inline-flex; align-items:center; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); text-decoration:none; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; transition:background .15s; }
+    .page-nav a:hover { background:var(--accent-dim); }
+    main { width:100%; max-width:740px; }
+    .timeline { border-left:1px solid var(--border); margin-left:8px; padding-left:28px; display:flex; flex-direction:column; gap:32px; }
+    .timeline-group { position:relative; }
+    .timeline-group::before { content:''; position:absolute; width:11px; height:11px; left:-34px; top:4px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 5px var(--bg); }
+    .timeline-group h2 { font-family:'Space Mono',monospace; font-size:13px; line-height:1.5; color:var(--accent); margin-bottom:12px; }
+    .timeline-group ul { list-style:none; display:flex; flex-direction:column; gap:10px; }
+    .timeline-group li { color:var(--text); font-size:15px; line-height:1.55; padding-left:16px; position:relative; }
+    .timeline-group li::before { content:'—'; position:absolute; left:0; color:var(--text-muted); }
+    .empty-state { color:var(--text-muted); font-size:14px; }
+    @media (max-width:600px) {
+      body { padding:28px 14px 60px; }
+      .site-header { margin-bottom:32px; }
+      .page-nav { margin-bottom:24px; }
+      .timeline { padding-left:22px; }
+      .timeline-group::before { left:-28px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="eyebrow">THE VAR COUNCIL</p>
+    ${renderPageTitle('Changelog', true)}
+    <p class="subtitle">The latest additions and fixes from The VAR Council.</p>
+  </header>
+  <nav class="page-nav">
+    <a href="/">Predictions</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables">Tables</a>
+    <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
+  </nav>
+  <main>
+    <div class="timeline">${timeline}</div>
+  </main>
+</body>
+</html>`;
+}
+
+app.get('/changelog', (_req, res) => {
+  res.send(renderChangelogPage());
+});
 
 app.get('/knockout', async (_req, res) => {
   try {

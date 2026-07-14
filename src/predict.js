@@ -1,7 +1,34 @@
 const db = require('./db');
 
 const ZEN_BASE = process.env.OPENCODE_ZEN_BASE_URL || 'https://opencode.ai/zen/v1';
-const FORECAST_VERSION = 2;
+const FORECAST_VERSION = 3;
+
+const KNOCKOUT_STAGES = {
+  r32: {
+    name: 'Round of 32',
+    guidance: 'This is the first elimination round. Weigh risk appetite, fatigue, rotation, and draw likelihood, but do not downgrade a stronger side merely because the match is knockout football.',
+  },
+  r16: {
+    name: 'Round of 16',
+    guidance: 'A quarterfinal berth is at stake. Weigh risk appetite, fatigue, rotation, and draw likelihood, but do not downgrade a stronger side merely because the match is knockout football.',
+  },
+  qf: {
+    name: 'Quarterfinal',
+    guidance: 'A semifinal berth is at stake. Account for the higher cost of errors, cautious game management, and draw likelihood where the matchup supports them.',
+  },
+  sf: {
+    name: 'Semifinal',
+    guidance: 'A place in the final is at stake. Account for exceptional pressure, risk management, and draw likelihood where the matchup supports them.',
+  },
+  third: {
+    name: 'Third-Place Playoff',
+    guidance: 'This is not an elimination match. Assess each team\'s motivation, rotation, fatigue, and openness from the evidence; do not assume it will be loose or high-scoring.',
+  },
+  final: {
+    name: 'Final',
+    guidance: 'The World Cup title is at stake. Account for peak pressure, caution, late-game risk management, and draw likelihood where the matchup supports them.',
+  },
+};
 
 const MODELS = [
   { name: 'minimax-m2.7',      apiId: 'minimax-m2.7',      endpoint: 'chat' },
@@ -25,7 +52,7 @@ function shuffleArray(arr) {
 function buildBaseSection(match) {
   const home = match.home_team || match.home_team_label || 'Home';
   const away = match.away_team || match.away_team_label || 'Away';
-  const stage = match.stage_group || match.type || 'Unknown';
+  const stage = KNOCKOUT_STAGES[match.type]?.name || match.stage_group || match.type || 'Unknown';
   const venue = match.stadium_name
     ? `${match.stadium_name}, ${match.stadium_city || ''}`
     : 'Unknown venue';
@@ -63,24 +90,97 @@ In your public reasoning, use the actual team names. Mention uncertainty only wh
 
 function buildKnockoutText(match) {
   if (match.type === 'group') return '';
+  const stage = KNOCKOUT_STAGES[match.type];
+  const isThirdPlace = match.type === 'third';
+  const outcome = isThirdPlace ? 'which team finishes third' : 'which team advances';
+  const outcomeWhenDrawn = isThirdPlace
+    ? 'choose the side you expect to finish third after the applicable tiebreaker'
+    : 'choose the side you expect to advance after extra time or penalties';
+
   return `This is a knockout match. "draw" means the match is level after 90 minutes plus stoppage time, before extra time or penalties.
 For knockout matches, predict the 90-minute score only; do not include extra time or penalties in the score.
-For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one team to advance after extra time or penalties.
-Also predict which team advances. If your 90-minute pick is "home" or "away", the advancing team must be the same side. If your 90-minute pick is "draw", choose the side you expect to advance after extra time or penalties.`;
+For knockout matches, if you expect the teams to be level after regulation, pick "draw" even if you expect one side to be the eventual ${isThirdPlace ? 'third-place finisher' : 'winner'}.
+Also predict ${outcome}. If your 90-minute pick is "home" or "away", the selected side must be the same side. If your 90-minute pick is "draw", ${outcomeWhenDrawn}.
+${stage ? `\nROUND CONTEXT\n${stage.guidance}` : ''}`;
 }
 
 function isKnockout(match) {
   return match.type !== 'group';
 }
 
+function isThirdPlace(match) {
+  return match.type === 'third';
+}
+
+function parseMatchReference(label) {
+  const match = label && label.match(/\b(?:winner|loser)\s+match\s+(\d+)\b/i);
+  return match ? match[1] : null;
+}
+
+function participantLabel(match, side) {
+  const team = match[`${side}_team`];
+  if (team) return team;
+
+  const label = match[`${side}_team_label`];
+  if (label) {
+    const reference = parseMatchReference(label);
+    if (reference) {
+      return label.replace(/\b(winner|loser)\s+match\s+(\d+)\b/i, (_, outcome, id) =>
+        `${outcome.toLowerCase()} of Match ${id}`
+      );
+    }
+    return label;
+  }
+
+  return 'TBD';
+}
+
+function nextMatchFor(match, allMatches) {
+  return allMatches.find((candidate) =>
+    [candidate.home_team_label, candidate.away_team_label]
+      .some((label) => parseMatchReference(label) === String(match.api_id) && /\bwinner\b/i.test(label))
+  );
+}
+
+function buildBracketContext(match, allMatches) {
+  if (!isKnockout(match)) return '';
+
+  if (isThirdPlace(match)) {
+    return `BRACKET SNAPSHOT\nThis is the third-place playoff. It follows the semifinal losers and has no onward route.`;
+  }
+
+  if (match.type === 'final') {
+    return 'BRACKET SNAPSHOT\nThis is the final. No onward route remains.';
+  }
+
+  const route = [];
+  const seen = new Set([String(match.api_id)]);
+  let current = match;
+
+  while (current && current.type !== 'final') {
+    const next = nextMatchFor(current, allMatches);
+    if (!next || seen.has(String(next.api_id))) break;
+    seen.add(String(next.api_id));
+    route.push(`${KNOCKOUT_STAGES[next.type]?.name || 'Next round'}: ${participantLabel(next, 'home')} vs ${participantLabel(next, 'away')}`);
+    current = next;
+  }
+
+  if (!route.length) {
+    return 'BRACKET SNAPSHOT\nNo confirmed onward bracket route is available for this match.';
+  }
+
+  return `BRACKET SNAPSHOT\nPotential route if either side wins this match:\n${route.map((step) => `- ${step}`).join('\n')}\nUse this route only as tournament context. Do not select a result because it creates a preferred or easier future matchup.`;
+}
+
 function buildOutputInstructions(match) {
   if (isKnockout(match)) {
+    const outcome = isThirdPlace(match) ? 'finishes third' : 'advances';
     return `Respond with ONLY a JSON object. Return exactly five keys: "pick", "home_score_90", "away_score_90", "advancing_team", and "reasoning". Do not include markdown or explanation outside the JSON.
 For "pick", output exactly one label: "home", "draw", or "away". Do not output a team name in "pick".
 For "home_score_90" and "away_score_90", output non-negative integers from 0 to 9 for the score after 90 minutes plus stoppage time, excluding extra time and penalties.
 The score must match "pick": home_score_90 > away_score_90 for "home", away_score_90 > home_score_90 for "away", and equal scores for "draw".
-For "advancing_team", output exactly "home" or "away". If "pick" is "home" or "away", "advancing_team" must be the same side.
-In "reasoning", explain both the 90-minute forecast and the advancement logic in no more than 3 sentences.
+For "advancing_team", output exactly "home" or "away". It identifies the side that ${outcome}. If "pick" is "home" or "away", "advancing_team" must be the same side.
+In "reasoning", explain both the 90-minute forecast and why that side ${outcome} in no more than 3 sentences.
 Choose the score from the match evidence. Do not copy an example score or reuse a previous council member's score by default.`;
   }
 
@@ -92,13 +192,14 @@ For "pick", output exactly one label: "home", "draw", or "away". Do not output a
 }`;
 }
 
-function buildOpenerPrompt(match) {
+function buildOpenerPrompt(match, bracketContext) {
   const knockoutText = buildKnockoutText(match);
 
   return `${buildCorePrompt()}
 
 ${buildBaseSection(match)}
 ${knockoutText ? `\n${knockoutText}\n` : ''}
+${bracketContext ? `\n${bracketContext}\n` : ''}
 Make your forecast independently. You cannot see any other council member's forecast yet. Keep reasoning to 3 sentences max.
 
 ${buildOutputInstructions(match)}`;
@@ -119,7 +220,8 @@ function formatCouncilContext(match, predictions) {
       return `${i + 1}. ${entry.modelName}: no valid prediction returned.`;
     }
     if (isKnockout(match) && entry.advancing_team) {
-      return `${i + 1}. ${entry.modelName} predicts: ${entry.pick.toUpperCase()}, advances: ${sideName(entry.advancing_team)}\n"${entry.reasoning}"`;
+      const outcome = isThirdPlace(match) ? 'finishes third' : 'advances';
+      return `${i + 1}. ${entry.modelName} predicts: ${entry.pick.toUpperCase()}, ${outcome}: ${sideName(entry.advancing_team)}\n"${entry.reasoning}"`;
     }
     return `${i + 1}. ${entry.modelName} picks: ${entry.pick.toUpperCase()}\n"${entry.reasoning}"`;
   }).join('\n\n');
@@ -465,12 +567,22 @@ async function getPredictions(matchId) {
     await db.execute({ sql: 'DELETE FROM predictions WHERE match_id = ?', args: [matchId] });
   }
 
+  const bracketResult = isKnockout(match)
+    ? await db.execute({
+      sql: `SELECT api_id, home_team, away_team, home_team_label, away_team_label, type
+            FROM matches
+            WHERE type IN ('r32', 'r16', 'qf', 'sf', 'third', 'final')`,
+      args: [],
+    })
+    : { rows: [] };
+  const bracketContext = buildBracketContext(match, bracketResult.rows);
+
   const shuffled = shuffleArray([...MODELS]);
   const predictionContext = [];
 
   for (let i = 0; i < shuffled.length; i++) {
     const model = shuffled[i];
-    const prompt = buildOpenerPrompt(match);
+    const prompt = buildOpenerPrompt(match, bracketContext);
 
     const result = await callWithFallback(model, prompt, match);
 
