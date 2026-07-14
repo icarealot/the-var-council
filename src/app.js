@@ -831,13 +831,14 @@ function renderPage({ matches, syncError }) {
         (p.advancing_team === 'home' || p.advancing_team === 'away');
     }
 
-    function renderKnockoutDetails(p, home, away, iconHtml) {
+    function renderKnockoutDetails(p, match, home, away, iconHtml) {
       var advance = sideName(p.advancing_team, home, away);
+      var outcomeLabel = match && match.type === 'third' ? 'Finishes third:' : 'Advance:';
       return '<div class="bubble-ko-lines">' +
         '<div class="bubble-ko-line"><span class="bubble-ko-label">90&#39;:</span><span>' +
           esc(home) + ' ' + esc(p.home_score_90) + '&ndash;' + esc(p.away_score_90) + ' ' + esc(away) +
         '</span>' + iconHtml + '</div>' +
-        '<div class="bubble-ko-line"><span class="bubble-ko-label">Advance:</span><span>' + esc(advance) + '</span></div>' +
+        '<div class="bubble-ko-line"><span class="bubble-ko-label">' + outcomeLabel + '</span><span>' + esc(advance) + '</span></div>' +
       '</div>';
     }
 
@@ -894,10 +895,11 @@ function renderPage({ matches, syncError }) {
       return predictions.some(function (p) { return hasKnockoutDetails(p); });
     }
 
-    function scorelineLabel(p, home, away) {
+    function scorelineLabel(p, match, home, away) {
       var score = esc(p.home_score_90) + '-' + esc(p.away_score_90);
       if (p.pick === 'draw') {
-        return 'Draw, ' + score + ', ' + esc(sideName(p.advancing_team, home, away)) + ' advance';
+        var outcome = match && match.type === 'third' ? ' to finish third' : ' advance';
+        return 'Draw, ' + score + ', ' + esc(sideName(p.advancing_team, home, away)) + outcome;
       }
       return esc(sideName(p.pick, home, away)) + ' win, ' + score;
     }
@@ -923,7 +925,7 @@ function renderPage({ matches, syncError }) {
 
         if (!groups[key]) {
           groups[key] = {
-            label: scorelineLabel(p, home, away),
+            label: scorelineLabel(p, match, home, away),
             models: []
           };
         }
@@ -979,7 +981,7 @@ function renderPage({ matches, syncError }) {
                         : '';
 
           var badgeHtml = hasKnockoutDetails(p) && !p.failed
-            ? renderKnockoutDetails(p, home, away, iconHtml)
+            ? renderKnockoutDetails(p, match, home, away, iconHtml)
             : '<div class="bubble-pick">' + (p.failed
               ? '<span class="pick-badge pick-failed">Prediction unavailable</span>'
               : pickBadge(p.pick, home, away)) + iconHtml + '</div>';
