@@ -4,6 +4,7 @@ const db = require('./db');
 const sync = require('./sync');
 const { getPredictions } = require('./predict');
 const { getChampionPredictions, readChampionPredictions } = require('./champion');
+const { getFinalPredictions, readFinalPredictions } = require('./final');
 const changelog = require('./changelog.json');
 
 const app = express();
@@ -762,6 +763,7 @@ function renderPage({ matches, syncError }) {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
+    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -1749,6 +1751,7 @@ function renderLeaderboardPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
+    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2223,6 +2226,7 @@ function renderTablesPage(groups) {
     <a href="/tables" class="active">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
+    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2473,6 +2477,7 @@ function renderKnockoutPage(matches) {
     <a href="/tables">Tables</a>
     <a href="/knockout" class="active">Knockout</a>
     <a href="/champion">Champion</a>
+    <a href="/final">Final</a>
   </nav>
   <main style="width:100%;max-width:740px;">
     ${mainContent}
@@ -2570,6 +2575,7 @@ function renderChampionPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion" class="active">Champion</a>
+    <a href="/final">Final</a>
   </nav>
   <main id="champion-area">
     <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Models are predicting the finalists and champion — this can take a few minutes...</p></div>
@@ -2673,6 +2679,301 @@ function renderChampionPage() {
 </html>`;
 }
 
+function renderFinalPage() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Var Council — Final</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    :root {
+      --bg:#0F172A; --surface:#1E293B; --surface-2:#273549; --border:#334155;
+      --accent:#38BDF8; --accent-dim:rgba(56,189,248,.15); --text:#F1F5F9;
+      --text-muted:#94A3B8; --purple:#A78BFA; --radius:10px;
+    }
+    body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:48px 20px 80px; }
+    .site-header { width:100%; max-width:740px; margin-bottom:48px; display:flex; flex-direction:column; gap:6px; }
+    .site-header .eyebrow { font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); }
+    .site-header h1 { font-size:clamp(28px,5vw,42px); font-weight:700; line-height:1.1; letter-spacing:-.02em; }
+    .site-header h1 em { font-style:normal; color:var(--accent); }
+    .site-header .subtitle { font-size:14px; color:var(--text-muted); margin-top:4px; }
+    .page-nav { width:100%; max-width:740px; margin-bottom:24px; display:flex; gap:8px; flex-wrap:wrap; }
+    .page-nav a { display:inline-flex; align-items:center; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); text-decoration:none; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; transition:background .15s; }
+    .page-nav a:hover { background:var(--accent-dim); }
+    .page-nav a.active { background:var(--accent); color:#0F172A; }
+    main { width:100%; max-width:740px; }
+    .spinner-wrap, .placeholder-msg, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
+    .placeholder-msg { border-style:dashed; color:var(--text-muted); font-size:14px; }
+    .placeholder-msg strong { display:block; color:var(--text); font-size:16px; margin-bottom:6px; }
+    .error-box { color:#FCA5A5; font-size:14px; }
+    .spinner { display:inline-block; width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:16px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner-msg { color:var(--text-muted); font-size:14px; }
+    .final-match { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:16px; margin-bottom:16px; }
+    .final-team { font-size:16px; font-weight:600; min-width:0; display:flex; align-items:center; gap:8px; }
+    .final-team.away { justify-content:flex-end; text-align:right; }
+    .final-team-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .final-team-flag { width:24px; height:18px; object-fit:cover; flex-shrink:0; border-radius:2px; }
+    .final-meta { text-align:center; font-family:'Space Mono',monospace; font-size:11px; color:var(--text-muted); white-space:nowrap; }
+    .final-vs { display:block; color:var(--text); font-size:13px; font-weight:700; margin-bottom:3px; }
+    .generation-note { color:var(--text-muted); font-size:12px; margin:0 2px 18px; }
+    .question-list { display:flex; flex-direction:column; gap:14px; }
+    .question-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px 16px; }
+    .question-title { font-size:15px; font-weight:600; line-height:1.4; }
+    .question-scope { color:var(--text-muted); font-family:'Space Mono',monospace; font-size:10px; margin-top:3px; }
+    .vote-bar-container { position:relative; margin-top:14px; }
+    .vote-bar { display:flex; height:44px; border-radius:6px; overflow:hidden; gap:2px; background:rgba(148,163,184,.12); }
+    .vb-seg { display:flex; align-items:center; justify-content:center; font-family:'Space Mono',monospace; font-size:16px; font-weight:700; color:#fff; cursor:pointer; min-width:30px; }
+    .vb-home { background:#38BDF8; }
+    .vb-draw { background:#64748B; }
+    .vb-away { background:#A78BFA; }
+    .vote-bar-legend { display:flex; gap:16px; margin-top:11px; font-size:12px; color:var(--text-muted); justify-content:center; flex-wrap:wrap; }
+    .vbl-dot { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+    .vbl-dot.home { background:#38BDF8; }
+    .vbl-dot.draw { background:#64748B; }
+    .vbl-dot.away { background:#A78BFA; }
+    .vb-tooltip { display:none; position:absolute; bottom:calc(100% + 8px); background:#0F172A; border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--text); white-space:nowrap; z-index:100; pointer-events:none; transform:translateX(-50%); }
+    .vb-tooltip.active { display:block; }
+    .vb-tooltip ul { margin:0; padding:0; list-style:none; }
+    .vb-tooltip li { display:flex; align-items:center; gap:6px; padding:2px 0; }
+    .model-icon { width:16px; height:16px; flex-shrink:0; }
+    @media (max-width:600px) {
+      body { padding:28px 14px 60px; }
+      .site-header { margin-bottom:32px; }
+      .final-match { padding:16px 14px; gap:9px; }
+      .final-team { font-size:14px; }
+      .final-meta { font-size:10px; }
+      .question-card { padding:16px 14px 14px; }
+      .question-title { font-size:14px; }
+      .vote-bar-legend { gap:10px; justify-content:flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="eyebrow">THE VAR COUNCIL</p>
+    ${renderPageTitle('Final')}
+    <p class="subtitle">Eight independent models forecast ten event markets for the World Cup final.</p>
+  </header>
+  <nav class="page-nav">
+    <a href="/">Predictions</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables">Tables</a>
+    <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
+    <a href="/final" class="active">Final</a>
+  </nav>
+  <main id="final-area">
+    <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Loading the final forecast...</p></div>
+  </main>
+  <script>
+  (function () {
+    var area = document.getElementById('final-area');
+    var generationRunning = false;
+    var pollTimer = null;
+    var TEAM_FLAGS = ${JSON.stringify(TEAM_FLAGS).replace(/<\//g, '<\\/')};
+    var ICONS = {
+      minimax:'minimax-color.svg', glm:'zai.svg', kimi:'kimi-color.svg',
+      qwen:'qwen-color.svg', deepseek:'deepseek-color.svg',
+      claude:'claude-color.svg', gemini:'google-color.svg', gpt:'openai.svg'
+    };
+
+    function esc(value) {
+      return String(value == null ? '' : value).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function icon(name) {
+      var lower = String(name || '').toLowerCase();
+      for (var prefix in ICONS) {
+        if (lower.indexOf(prefix) === 0) return '<img class="model-icon" src="/icons/' + ICONS[prefix] + '" alt="">';
+      }
+      return '';
+    }
+    function formatKickoff(value) {
+      if (!value) return 'Kickoff TBD';
+      var parts = value.split(' ');
+      return parts.length === 2 ? esc(parts[0]) + '<br>' + esc(parts[1]) + ' ICT' : esc(value);
+    }
+    function teamTitle(name, flagLast) {
+      var label = name || 'TBD';
+      var code = TEAM_FLAGS[label];
+      var flag = code
+        ? '<img class="final-team-flag" src="https://flagcdn.com/w40/' + esc(code) + '.png" alt="' + esc(label) + ' flag">'
+        : '';
+      var teamName = '<span class="final-team-name">' + esc(label) + '</span>';
+      return flagLast ? teamName + flag : flag + teamName;
+    }
+    function matchCard(match) {
+      return '<section class="final-match"><div class="final-team">' + teamTitle(match.home_team) + '</div>' +
+        '<div class="final-meta"><span class="final-vs">vs</span>' + formatKickoff(match.local_date_ict) + '</div>' +
+        '<div class="final-team away">' + teamTitle(match.away_team, true) + '</div></section>';
+    }
+    function optionsFor(question, match) {
+      var home = { value:'home', label:match.home_team, cls:'home' };
+      var away = { value:'away', label:match.away_team, cls:'away' };
+      if (question.kind === 'team_goal') return [home, away];
+      if (question.kind === 'team_cards') return [home, { value:'tie', label:'Tie', cls:'draw' }, away];
+      if (question.kind === 'team_corner') return [home, { value:'none', label:'No corners', cls:'draw' }, away];
+      if (question.kind === 'yes_no') return [
+        { value:'yes', label:'Yes', cls:'home' }, { value:'no', label:'No', cls:'draw' }
+      ];
+      if (question.kind === 'cards_total') return [
+        { value:'over_4_5', label:'Over 4.5', cls:'home' }, { value:'under_4_5', label:'Under 4.5', cls:'draw' }
+      ];
+      return [
+        { value:'over_6_5', label:'Over 6.5', cls:'home' }, { value:'under_6_5', label:'Under 6.5', cls:'draw' }
+      ];
+    }
+
+    var QUESTIONS = [
+      { key:'opening_goal_team', title:'Which team will score first?', scope:'Full match — includes extra time and successful penalty-shootout kicks', kind:'team_goal' },
+      { key:'closing_goal_team', title:'Which team will score last?', scope:'Full match — includes extra time and successful penalty-shootout kicks', kind:'team_goal' },
+      { key:'own_goal', title:'Will there be an own goal?', scope:'Regulation + stoppage time', kind:'yes_no' },
+      { key:'penalty_goal', title:'Will a penalty kick be scored?', scope:'Regulation + stoppage time', kind:'yes_no' },
+      { key:'both_teams_score_90', title:'Will both teams score?', scope:'90 minutes only — excludes stoppage time', kind:'yes_no' },
+      { key:'total_player_cards', title:'Total player yellow and red cards', scope:'Regulation + stoppage time', kind:'cards_total' },
+      { key:'most_player_cards', title:'Which team will receive more player cards?', scope:'Regulation + stoppage time', kind:'team_cards' },
+      { key:'team_official_card_90', title:'Will any team official receive a card?', scope:'90 minutes only — excludes stoppage time', kind:'yes_no' },
+      { key:'total_corners', title:'Total corners', scope:'Regulation + stoppage time', kind:'corners_total' },
+      { key:'last_corner_team', title:'Which team will take the final corner?', scope:'Regulation + stoppage time', kind:'team_corner' }
+    ];
+
+    function chart(question, predictions, match) {
+      var options = optionsFor(question, match);
+      var counts = {};
+      var voters = {};
+      options.forEach(function (option) { counts[option.value] = 0; voters[option.value] = []; });
+      predictions.forEach(function (prediction) {
+        var value = prediction[question.key];
+        if (counts.hasOwnProperty(value)) {
+          counts[value]++;
+          voters[value].push(prediction.model_name);
+        }
+      });
+      function segment(option) {
+        var count = counts[option.value];
+        if (!count) return '';
+        return '<div class="vb-seg vb-' + option.cls + '" style="flex:' + count + '" data-voters="' +
+          esc(JSON.stringify(voters[option.value])) + '" aria-label="' + esc(option.label + ': ' + count) + '">' + count + '</div>';
+      }
+      var legend = options.map(function (option) {
+        return '<span><span class="vbl-dot ' + option.cls + '"></span>' + esc(option.label) + '</span>';
+      }).join('');
+      return '<section class="question-card"><h2 class="question-title">' + esc(question.title) + '</h2>' +
+        '<p class="question-scope">' + esc(question.scope) + '</p><div class="vote-bar-container">' +
+        '<div class="vote-bar">' + options.map(segment).join('') + '</div><div class="vb-tooltip"></div></div>' +
+        '<div class="vote-bar-legend">' + legend + '</div></section>';
+    }
+    function render(data) {
+      var count = data.predictions.length;
+      var note = count + '/' + data.total + ' models locked';
+      if (data.status === 'locked_partial') note += ' before kickoff; no further forecasts can be added.';
+      else if (count < data.total) note += '. Remaining models are retrying automatically.';
+      area.innerHTML = matchCard(data.match) + '<p class="generation-note">' + esc(note) + '</p>' +
+        '<div class="question-list">' + QUESTIONS.map(function (question) {
+          return chart(question, data.predictions, data.match);
+        }).join('') + '</div>';
+    }
+    function placeholder(data) {
+      var title = 'Final forecast unavailable';
+      var message = 'No final match is scheduled yet.';
+      if (data.status === 'waiting_for_teams') {
+        title = 'Waiting for the finalists';
+        message = 'Forecasting starts after both teams in the final are confirmed.';
+      } else if (data.status === 'waiting_for_schedule') {
+        title = 'Waiting for kickoff details';
+        message = 'Forecasting starts after the final has a confirmed kickoff time.';
+      } else if (data.status === 'locked_empty') {
+        title = 'No pre-match forecast';
+        message = 'Kickoff has passed, so the council will not generate predictions after the match begins.';
+      } else if (data.status === 'ready') {
+        return area.innerHTML = matchCard(data.match) + '<div class="spinner-wrap"><div class="spinner"></div>' +
+          '<p class="spinner-msg">Models are forecasting the final. Charts will appear as answers are locked...</p></div>';
+      }
+      area.innerHTML = (data.match ? matchCard(data.match) : '') + '<div class="placeholder-msg"><strong>' +
+        esc(title) + '</strong>' + esc(message) + '</div>';
+    }
+    function schedulePoll() {
+      window.clearTimeout(pollTimer);
+      pollTimer = window.setTimeout(load, 4000);
+    }
+    function triggerGeneration() {
+      if (generationRunning) return;
+      generationRunning = true;
+      fetch('/api/final/generate', { method:'POST' })
+        .catch(function () {})
+        .finally(function () { generationRunning = false; load(); });
+    }
+    async function load() {
+      try {
+        var response = await fetch('/api/final', { cache:'no-store' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var data = await response.json();
+        if (data.predictions.length) render(data); else placeholder(data);
+        if (data.can_generate) {
+          triggerGeneration();
+          schedulePoll();
+        }
+      } catch (error) {
+        area.innerHTML = '<div class="error-box">Could not load the final forecast. Retrying automatically...</div>';
+        schedulePoll();
+      }
+    }
+
+    var isTouch = false;
+    document.addEventListener('touchstart', function () { isTouch = true; }, { once:true });
+    function hideTooltips() {
+      area.querySelectorAll('.vb-tooltip.active').forEach(function (tooltip) { tooltip.classList.remove('active'); });
+    }
+    function showTooltip(segment) {
+      var container = segment.closest('.vote-bar-container');
+      var tooltip = container.querySelector('.vb-tooltip');
+      var names = JSON.parse(segment.getAttribute('data-voters') || '[]');
+      tooltip.innerHTML = '<ul>' + names.map(function (name) {
+        return '<li>' + icon(name) + esc(name) + '</li>';
+      }).join('') + '</ul>';
+      var containerRect = container.getBoundingClientRect();
+      var segmentRect = segment.getBoundingClientRect();
+      tooltip.style.left = (segmentRect.left + segmentRect.width / 2 - containerRect.left) + 'px';
+      tooltip.classList.add('active');
+    }
+    area.addEventListener('mouseover', function (event) {
+      if (isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (segment) showTooltip(segment);
+    });
+    area.addEventListener('mouseout', function (event) {
+      if (isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (segment && !segment.contains(event.relatedTarget)) hideTooltips();
+    });
+    area.addEventListener('click', function (event) {
+      if (!isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (!segment) return hideTooltips();
+      var tooltip = segment.closest('.vote-bar-container').querySelector('.vb-tooltip');
+      var active = tooltip.classList.contains('active');
+      hideTooltips();
+      if (!active) showTooltip(segment);
+    });
+    area.addEventListener('error', function (event) {
+      if (event.target.classList && event.target.classList.contains('final-team-flag')) {
+        event.target.style.display = 'none';
+      }
+    }, true);
+    load();
+  })();
+  </script>
+</body>
+</html>`;
+}
+
 function renderChangelogPage() {
   const timeline = changelog.length
     ? changelog.map((group) => {
@@ -2747,6 +3048,7 @@ function renderChangelogPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
+    <a href="/final">Final</a>
   </nav>
   <main>
     <div class="timeline">${timeline}</div>
@@ -2771,6 +3073,39 @@ app.get('/knockout', async (_req, res) => {
 
 app.get('/champion', (_req, res) => {
   res.send(renderChampionPage());
+});
+
+app.get('/final', (_req, res) => {
+  res.send(renderFinalPage());
+});
+
+app.get('/api/final', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await readFinalPredictions());
+  } catch (err) {
+    console.error('Final prediction DB error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+let finalInFlight = null;
+
+app.post('/api/final/generate', async (_req, res) => {
+  try {
+    if (!finalInFlight) {
+      console.log('[final] generation request accepted');
+      finalInFlight = getFinalPredictions().finally(() => {
+        finalInFlight = null;
+      });
+    } else {
+      console.log('[final] generation request joined existing pass');
+    }
+    res.json(await finalInFlight);
+  } catch (err) {
+    console.error('Final prediction error:', err);
+    res.status(422).json({ error: err.message });
+  }
 });
 
 app.get('/api/champion', async (_req, res) => {

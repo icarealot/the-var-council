@@ -2,6 +2,14 @@ const db = require('./db');
 
 const ZEN_BASE = process.env.OPENCODE_ZEN_BASE_URL || 'https://opencode.ai/zen/v1';
 const FORECAST_VERSION = 3;
+const parsedRequestTimeout = Number.parseInt(process.env.OPENCODE_ZEN_REQUEST_TIMEOUT_MS, 10);
+const MODEL_REQUEST_TIMEOUT_MS = Number.isFinite(parsedRequestTimeout) && parsedRequestTimeout > 0
+  ? parsedRequestTimeout
+  : 90_000;
+
+function modelRequestSignal() {
+  return AbortSignal.timeout(MODEL_REQUEST_TIMEOUT_MS);
+}
 
 const KNOCKOUT_STAGES = {
   r32: {
@@ -277,6 +285,7 @@ function isTransientProviderError(err) {
     return true;
   }
   return err.name === 'AbortError' ||
+    err.name === 'TimeoutError' ||
     err.code === 'ETIMEDOUT' ||
     err.code === 'ECONNRESET' ||
     err.code === 'ECONNREFUSED' ||
@@ -325,6 +334,7 @@ function validatePickAndScore(result, match) {
 async function callChat(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/chat/completions`, {
     method: 'POST',
+    signal: modelRequestSignal(),
     headers: {
       'Authorization': `Bearer ${process.env.OPENCODE_ZEN_API_KEY}`,
       'Content-Type': 'application/json',
@@ -346,6 +356,7 @@ async function callChat(model, prompt) {
 async function callAnthropic(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/messages`, {
     method: 'POST',
+    signal: modelRequestSignal(),
     headers: {
       'x-api-key': process.env.OPENCODE_ZEN_API_KEY,
       'anthropic-version': '2023-06-01',
@@ -369,6 +380,7 @@ async function callAnthropic(model, prompt) {
 async function callGoogle(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/models/${model.apiId}:generateContent`, {
     method: 'POST',
+    signal: modelRequestSignal(),
     headers: {
       'x-goog-api-key': process.env.OPENCODE_ZEN_API_KEY,
       'Content-Type': 'application/json',
@@ -390,6 +402,7 @@ async function callGoogle(model, prompt) {
 async function callResponses(model, prompt) {
   const res = await fetch(`${ZEN_BASE}/responses`, {
     method: 'POST',
+    signal: modelRequestSignal(),
     headers: {
       'Authorization': `Bearer ${process.env.OPENCODE_ZEN_API_KEY}`,
       'Content-Type': 'application/json',
@@ -587,8 +600,8 @@ async function getPredictions(matchId) {
     const result = await callWithFallback(model, prompt, match);
 
     await db.execute({
-      sql: `INSERT INTO predictions (match_id, model_name, pick, home_score_90, away_score_90, advancing_team, reasoning, debate_reasoning, forecast_version, failed, order_index, predicted_at, input_tokens, output_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      sql: `INSERT INTO predictions (match_id, model_name, pick, home_score_90, away_score_90, advancing_team, reasoning, debate_reasoning, forecast_version, failed, order_index, predicted_at, input_tokens, output_tokens, home_team_snapshot, away_team_snapshot)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id, model_name) DO UPDATE SET
               pick          = excluded.pick,
               home_score_90 = excluded.home_score_90,
@@ -601,7 +614,9 @@ async function getPredictions(matchId) {
               order_index   = excluded.order_index,
               predicted_at  = excluded.predicted_at,
               input_tokens  = excluded.input_tokens,
-              output_tokens = excluded.output_tokens
+              output_tokens = excluded.output_tokens,
+              home_team_snapshot = excluded.home_team_snapshot,
+              away_team_snapshot = excluded.away_team_snapshot
             WHERE excluded.failed = 0`,
       args: [
         matchId,
@@ -618,6 +633,8 @@ async function getPredictions(matchId) {
         new Date().toISOString(),
         result.inputTokens,
         result.outputTokens,
+        match.home_team,
+        match.away_team,
       ],
     });
 
@@ -659,8 +676,82 @@ async function getPredictions(matchId) {
   return allResult.rows;
 }
 
+// Final-event forecasts require a valid locked score from each model. Ordinary
+// match pages intentionally keep complete sets stable, including failed rows;
+// this targeted retry upgrades only those failures without touching successful
+// forecasts or changing their display order.
+async function retryFailedPredictions(matchId) {
+  const matchResult = await db.execute({
+    sql: `SELECT m.*, s.name AS stadium_name, s.city AS stadium_city
+          FROM matches m
+          LEFT JOIN stadiums s ON s.id = m.stadium_id
+          WHERE m.id = ?`,
+    args: [matchId],
+  });
+  if (!matchResult.rows.length) return [];
+  const match = matchResult.rows[0];
+
+  const failedResult = await db.execute({
+    sql: 'SELECT * FROM predictions WHERE match_id = ? AND failed = 1 ORDER BY order_index ASC',
+    args: [matchId],
+  });
+  if (!failedResult.rows.length) {
+    const current = await db.execute({
+      sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC',
+      args: [matchId],
+    });
+    return current.rows;
+  }
+
+  const bracketResult = isKnockout(match)
+    ? await db.execute(`SELECT api_id, home_team, away_team, home_team_label, away_team_label, type
+                        FROM matches
+                        WHERE type IN ('r32', 'r16', 'qf', 'sf', 'third', 'final')`)
+    : { rows: [] };
+  const bracketContext = buildBracketContext(match, bracketResult.rows);
+
+  for (const failed of failedResult.rows) {
+    const model = MODELS.find((entry) => entry.name === failed.model_name);
+    if (!model) continue;
+    const result = await callWithFallback(model, buildOpenerPrompt(match, bracketContext), match);
+    if (result.failed) continue;
+
+    await db.execute({
+      sql: `UPDATE predictions
+            SET pick = ?, home_score_90 = ?, away_score_90 = ?, advancing_team = ?,
+                reasoning = ?, debate_reasoning = NULL, forecast_version = ?, failed = 0,
+                predicted_at = ?, input_tokens = ?, output_tokens = ?,
+                home_team_snapshot = ?, away_team_snapshot = ?
+            WHERE match_id = ? AND model_name = ? AND failed = 1`,
+      args: [
+        result.pick,
+        result.home_score_90,
+        result.away_score_90,
+        result.advancing_team,
+        result.reasoning,
+        FORECAST_VERSION,
+        new Date().toISOString(),
+        result.inputTokens,
+        result.outputTokens,
+        match.home_team,
+        match.away_team,
+        matchId,
+        model.name,
+      ],
+    });
+    console.log(`[predict] match ${matchId} - ${model.name} failed forecast recovered for final events`);
+  }
+
+  const result = await db.execute({
+    sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC',
+    args: [matchId],
+  });
+  return result.rows;
+}
+
 module.exports = {
   getPredictions,
+  retryFailedPredictions,
   MODELS,
   FORECAST_VERSION,
   callModel,
