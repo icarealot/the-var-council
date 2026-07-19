@@ -1,5 +1,13 @@
 [
   {
+    "date": "2026-07-19",
+    "entries": [
+      "Added a Final tab with council consensus charts for ten scoring, discipline, and corner questions.",
+      "Expanded the first- and last-scoring-team questions to cover the full match, including extra time and successful penalty-shootout kicks.",
+      "Improved final forecast reliability with provider timeouts, automatic recovery, and clearer generation logs."
+    ]
+  },
+  {
     "date": "2026-07-14",
     "entries": [
       "Added round-specific and onward-bracket context to knockout forecasts.",
