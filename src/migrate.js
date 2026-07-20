@@ -44,6 +44,8 @@ async function migrate() {
       failed       INTEGER NOT NULL DEFAULT 0,
       order_index  INTEGER,
       predicted_at TEXT    NOT NULL,
+      home_team_snapshot TEXT,
+      away_team_snapshot TEXT,
       UNIQUE (match_id, model_name)
     )`,
 
@@ -65,6 +67,36 @@ async function migrate() {
       predicted_at  TEXT    NOT NULL,
       input_tokens  INTEGER,
       output_tokens INTEGER
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS final_runs (
+      id           INTEGER PRIMARY KEY CHECK (id = 1),
+      match_id     INTEGER NOT NULL,
+      home_team    TEXT    NOT NULL,
+      away_team    TEXT    NOT NULL,
+      kickoff_ict  TEXT    NOT NULL,
+      context_json TEXT    NOT NULL,
+      created_at   TEXT    NOT NULL
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS final_predictions (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id                 INTEGER NOT NULL DEFAULT 1,
+      model_name             TEXT    NOT NULL UNIQUE,
+      opening_goal_team      TEXT    NOT NULL CHECK (opening_goal_team IN ('home', 'away')),
+      closing_goal_team      TEXT    NOT NULL CHECK (closing_goal_team IN ('home', 'away')),
+      own_goal               TEXT    NOT NULL CHECK (own_goal IN ('yes', 'no')),
+      penalty_goal           TEXT    NOT NULL CHECK (penalty_goal IN ('yes', 'no')),
+      both_teams_score_90    TEXT    NOT NULL CHECK (both_teams_score_90 IN ('yes', 'no')),
+      total_player_cards     TEXT    NOT NULL CHECK (total_player_cards IN ('over_4_5', 'under_4_5')),
+      most_player_cards      TEXT    NOT NULL CHECK (most_player_cards IN ('home', 'away', 'tie')),
+      team_official_card_90  TEXT    NOT NULL CHECK (team_official_card_90 IN ('yes', 'no')),
+      total_corners          TEXT    NOT NULL CHECK (total_corners IN ('over_6_5', 'under_6_5')),
+      last_corner_team       TEXT    NOT NULL CHECK (last_corner_team IN ('home', 'away', 'none')),
+      order_index            INTEGER NOT NULL,
+      predicted_at           TEXT    NOT NULL,
+      input_tokens           INTEGER,
+      output_tokens          INTEGER
     )`,
   ]);
 
@@ -113,6 +145,14 @@ async function migrate() {
     await db.execute(`ALTER TABLE predictions ADD COLUMN forecast_version INTEGER NOT NULL DEFAULT 1`);
   } catch (e) {
     if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+  }
+
+  for (const col of ['home_team_snapshot', 'away_team_snapshot']) {
+    try {
+      await db.execute(`ALTER TABLE predictions ADD COLUMN ${col} TEXT`);
+    } catch (e) {
+      if (!e.message.toLowerCase().includes('duplicate column')) throw e;
+    }
   }
 }
 

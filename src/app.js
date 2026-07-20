@@ -2,8 +2,8 @@ const path = require('path');
 const express = require('express');
 const db = require('./db');
 const sync = require('./sync');
-const { getPredictions } = require('./predict');
-const { getChampionPredictions, readChampionPredictions } = require('./champion');
+const { readChampionPredictions } = require('./champion');
+const { readFinalPredictions } = require('./final');
 const changelog = require('./changelog.json');
 
 const app = express();
@@ -105,7 +105,7 @@ function renderPageTitle(title, changelogActive = false) {
   </div>`;
 }
 
-function renderPage({ matches, syncError }) {
+function renderPage({ matches, syncError, initialMatchId = null }) {
   const confirmed = matches.filter((m) => !isUnconfirmed(m));
 
   const byDate = new Map();
@@ -128,6 +128,7 @@ function renderPage({ matches, syncError }) {
           const timePart = m.local_date_ict ? m.local_date_ict.split(' ')[1] : null;
           return {
             id: m.id,
+            type: m.type,
             home,
             away,
             homeFlag: TEAM_FLAGS[home] ? flagImg(TEAM_FLAGS[home]) : '',
@@ -304,10 +305,35 @@ function renderPage({ matches, syncError }) {
 
     .predictions-nav {
       display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .predictions-nav-row {
+      display: flex;
       align-items: center;
       gap: 16px;
     }
-    .predictions-nav .match-card { flex: 1; cursor: default; pointer-events: none; }
+    .predictions-nav-row .match-card { flex: 1; cursor: default; pointer-events: none; }
+
+    .final-forecast-btn {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      color: var(--accent);
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .final-forecast-btn:hover { background: var(--accent-dim); }
 
     .match-card-time {
       font-family: 'Space Mono', monospace;
@@ -774,6 +800,7 @@ function renderPage({ matches, syncError }) {
   <script>
   (function () {
     var MATCH_DATA = ${JSON.stringify(matchData).replace(/<\//g, '<\\/')};
+    var INITIAL_MATCH_ID = ${JSON.stringify(initialMatchId == null ? '' : String(initialMatchId))};
 
     var navArea   = document.getElementById('nav-area');
     var matchArea = document.getElementById('match-area');
@@ -1019,28 +1046,22 @@ function renderPage({ matches, syncError }) {
 
       try {
         var r = await fetch('/api/predictions/' + matchId);
-        if (r.ok) {
-          var data = await r.json();
-          if (data.predictions && data.predictions.length >= 8) {
-            if (activeMatchId !== String(matchId)) return;
-            area.innerHTML = renderBubbles(data.predictions, data.match, home, away);
-            return;
-          }
-        }
-      } catch (_) {}
-
-      showSpinner(true);
-
-      try {
-        var r2 = await fetch('/api/predict/' + matchId, { method: 'POST' });
-        if (!r2.ok) throw new Error('HTTP ' + r2.status);
-        var data2 = await r2.json();
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var data = await r.json();
         if (activeMatchId !== String(matchId)) return;
-        area.innerHTML = renderBubbles(data2.predictions, data2.match, home, away);
+        var predictions = data.predictions || [];
+        if (!predictions.length) {
+          area.innerHTML = '<div class="placeholder-msg"><strong>Archived data incomplete</strong>No saved predictions are available for this match.</div>';
+          return;
+        }
+        var notice = predictions.length < 8
+          ? '<div class="placeholder-msg"><strong>Archived data incomplete</strong>Showing ' + predictions.length + ' of 8 saved predictions.</div>'
+          : '';
+        area.innerHTML = notice + renderBubbles(predictions, data.match, home, away);
       } catch (err) {
         if (activeMatchId !== String(matchId)) return;
         area.innerHTML =
-          '<div class="placeholder-msg"><strong>Error</strong>Could not load predictions. Please try again.</div>';
+          '<div class="placeholder-msg"><strong>Error</strong>Could not load the archived predictions.</div>';
       }
     }
 
@@ -1061,6 +1082,35 @@ function renderPage({ matches, syncError }) {
       });
     }
 
+    var dateScrollFrame = null;
+
+    function scrollActiveDate(behavior) {
+      if (dateScrollFrame !== null) cancelAnimationFrame(dateScrollFrame);
+
+      // The strip is created dynamically. Wait for the browser to lay it out,
+      // then scroll that container directly so page scroll restoration cannot
+      // cancel or replace the horizontal position.
+      dateScrollFrame = requestAnimationFrame(function () {
+        dateScrollFrame = null;
+        var strip = navArea.querySelector('.date-strip');
+        var chip = strip && strip.querySelector('.date-chip.active');
+        if (!strip || !chip) return;
+
+        var stripRect = strip.getBoundingClientRect();
+        var chipRect = chip.getBoundingClientRect();
+        var centeredLeft = strip.scrollLeft + chipRect.left - stripRect.left -
+          (strip.clientWidth - chipRect.width) / 2;
+        var maxLeft = Math.max(0, strip.scrollWidth - strip.clientWidth);
+        var left = Math.max(0, Math.min(centeredLeft, maxLeft));
+
+        if (behavior === 'smooth') {
+          strip.scrollTo({ left: left, behavior: 'smooth' });
+        } else {
+          strip.scrollLeft = left;
+        }
+      });
+    }
+
     /* ── Match cards ── */
     function renderMatchCards(group) {
       var html = '';
@@ -1068,7 +1118,7 @@ function renderPage({ matches, syncError }) {
         var m = group.matches[i];
         var selected = String(m.id) === String(activeMatchId) ? ' selected' : '';
         var scoreStr = m.finished ? (m.homeScore + '–' + m.awayScore) : 'vs';
-        html += '<button class="match-card' + selected + '" data-id="' + m.id + '" data-home="' + esc(m.home) + '" data-away="' + esc(m.away) + '">' +
+        html += '<button class="match-card' + selected + '" data-id="' + m.id + '" data-type="' + esc(m.type || '') + '" data-home="' + esc(m.home) + '" data-away="' + esc(m.away) + '">' +
           '<span class="match-card-time">' + esc(m.time) + '</span>' +
           '<span class="match-card-home">' + m.homeFlag + ' ' + esc(m.home) + '</span>' +
           '<span class="match-card-score">' + esc(scoreStr) + '</span>' +
@@ -1081,21 +1131,19 @@ function renderPage({ matches, syncError }) {
     function attachCardListeners(group) {
       matchArea.querySelectorAll('.match-card').forEach(function (card) {
         card.addEventListener('click', function () {
-          gotoPredictions(card.dataset.id, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel, card.innerHTML);
+          gotoPredictions(card.dataset.id, card.dataset.type, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel, card.innerHTML);
         });
       });
     }
 
     /* ── State transitions ── */
-    function showMatchCards(datePart) {
+    function showMatchCards(datePart, scrollBehavior) {
       activeDate = datePart;
-      var activeChip = null;
       navArea.querySelectorAll('.date-chip').forEach(function (chip) {
         var isActive = chip.dataset.date === datePart;
         chip.classList.toggle('active', isActive);
-        if (isActive) activeChip = chip;
       });
-      if (activeChip) activeChip.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      scrollActiveDate(scrollBehavior || 'smooth');
       var group = null;
       for (var i = 0; i < MATCH_DATA.length; i++) {
         if (MATCH_DATA[i].datePart === datePart) { group = MATCH_DATA[i]; break; }
@@ -1108,12 +1156,17 @@ function renderPage({ matches, syncError }) {
       hint.style.display = '';
     }
 
-    function gotoPredictions(matchId, home, away, datePart, shortLabel, cardHTML) {
+    function gotoPredictions(matchId, matchType, home, away, datePart, shortLabel, cardHTML) {
       activeMatchId = String(matchId);
       navArea.innerHTML =
         '<div class="predictions-nav">' +
-          '<button class="back-btn">← ' + esc(shortLabel) + '</button>' +
-          '<div class="match-card">' + cardHTML + '</div>' +
+          '<div class="predictions-nav-row">' +
+            '<button class="back-btn">← ' + esc(shortLabel) + '</button>' +
+            '<div class="match-card">' + cardHTML + '</div>' +
+          '</div>' +
+          (matchType === 'final'
+            ? '<a class="final-forecast-btn" href="/final">View final event forecasts <span aria-hidden="true">→</span></a>'
+            : '') +
         '</div>';
       navArea.querySelector('.back-btn').addEventListener('click', function () {
         activeMatchId = null;
@@ -1191,6 +1244,25 @@ function renderPage({ matches, syncError }) {
     navArea.innerHTML = renderDateStrip();
     attachChipListeners();
 
+    if (INITIAL_MATCH_ID) {
+      for (var mi = 0; mi < MATCH_DATA.length; mi++) {
+        var initialGroup = MATCH_DATA[mi];
+        for (var mj = 0; mj < initialGroup.matches.length; mj++) {
+          if (String(initialGroup.matches[mj].id) !== INITIAL_MATCH_ID) continue;
+          showMatchCards(initialGroup.datePart, 'auto');
+          var initialCards = matchArea.querySelectorAll('.match-card');
+          for (var mk = 0; mk < initialCards.length; mk++) {
+            if (initialCards[mk].dataset.id === INITIAL_MATCH_ID) {
+              initialCards[mk].click();
+              break;
+            }
+          }
+          break;
+        }
+        if (activeMatchId) break;
+      }
+    }
+
     // Auto-select today in ICT (UTC+7), or nearest upcoming date
     var nowICT   = new Date(Date.now() + 7 * 60 * 60 * 1000);
     var todayStr = nowICT.toISOString().slice(0, 10);
@@ -1203,7 +1275,13 @@ function renderPage({ matches, syncError }) {
         if (MATCH_DATA[aj].datePart > todayStr) { autoDate = MATCH_DATA[aj].datePart; break; }
       }
     }
-    if (autoDate) showMatchCards(autoDate);
+    if (!activeMatchId && autoDate) showMatchCards(autoDate, 'auto');
+
+    // Browsers may restore nested scroll positions after the inline script has
+    // run (and again when reviving the page from the back-forward cache).
+    window.addEventListener('pageshow', function () {
+      if (!activeMatchId && activeDate) scrollActiveDate('auto');
+    });
   })();
   </script>
 </body>
@@ -1407,8 +1485,15 @@ app.get('/api/ready', async (_req, res) => {
 });
 
 app.get('/', async (req, res) => {
+  const initialMatchId = typeof req.query.match === 'string' && /^\d+$/.test(req.query.match)
+    ? req.query.match
+    : null;
+
   if (!req.query.ready) {
-    return res.redirect('/loading?next=' + encodeURIComponent('/?ready=1'));
+    const next = initialMatchId
+      ? `/?ready=1&match=${encodeURIComponent(initialMatchId)}`
+      : '/?ready=1';
+    return res.redirect('/loading?next=' + encodeURIComponent(next));
   }
 
   let syncError = null;
@@ -1418,13 +1503,14 @@ app.get('/', async (req, res) => {
       'SELECT * FROM matches ORDER BY local_date_ict ASC'
     );
     const matches = result.rows;
-    res.send(renderPage({ matches, syncError }));
+    res.send(renderPage({ matches, syncError, initialMatchId }));
   } catch (err) {
     console.error('DB query failed:', err);
     res.status(500).send(
       renderPage({
         matches: [],
         syncError: err.message,
+        initialMatchId,
       })
     );
   }
@@ -1440,7 +1526,7 @@ app.get('/api/predictions/:matchId', async (req, res) => {
       db.execute({ sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC', args: [matchId] }),
       db.execute({ sql: 'SELECT id, type, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
-    if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });
+    if (!matchResult.rows.length) return res.status(404).json({ error: 'Match not found' });
     res.json({ predictions: predResult.rows, match: matchResult.rows[0] || null });
   } catch (err) {
     console.error('DB error:', err);
@@ -2521,10 +2607,11 @@ function renderChampionPage() {
     .page-nav a:hover { background:var(--accent-dim); }
     .page-nav a.active { background:var(--accent); color:#0F172A; }
     main { width:100%; max-width:740px; }
-    .spinner-wrap, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
+    .spinner-wrap, .error-box, .archive-note { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
     .spinner { display:inline-block; width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:16px; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .spinner-msg, .error-box { color:var(--text-muted); font-size:14px; }
+    .spinner-msg, .error-box, .archive-note { color:var(--text-muted); font-size:14px; }
+    .archive-note { padding:16px; margin-bottom:16px; border-style:dashed; }
     .consensus { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:24px; }
     .chart-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px; }
     .chart-title { font-family:'Space Mono',monospace; font-size:12px; font-weight:700; color:var(--text); margin-bottom:14px; text-transform:uppercase; letter-spacing:.06em; }
@@ -2626,6 +2713,9 @@ function renderChampionPage() {
         }).join('') + '</div></section>';
     }
     function render(predictions) {
+      var archiveNote = predictions.length < 8
+        ? '<div class="archive-note">Archived data incomplete: showing ' + predictions.length + ' of 8 saved forecasts.</div>'
+        : '';
       var bubbles = predictions.map(function (prediction, index) {
         return '<div class="chat-row ' + (index % 2 === 0 ? 'left' : 'right') + '">' +
           '<div class="chat-sender">' + icon(prediction.model_name) + esc(prediction.model_name) + '</div>' +
@@ -2635,37 +2725,313 @@ function renderChampionPage() {
           team(prediction.champion) + '</div><span class="bubble-reason">' +
           esc(prediction.reasoning) + '</span></div></div>';
       }).join('');
-      area.innerHTML = '<div class="consensus">' +
+      area.innerHTML = archiveNote + '<div class="consensus">' +
         chart(predictions, 'champion', 'Champion votes', '') +
         chart(predictions, 'finalists', 'Finalist picks', 'finalist-chart') +
         '</div><div class="chat-feed">' + bubbles + '</div>';
     }
-    function retry() {
-      window.setTimeout(load, 5000);
-    }
     async function load() {
       try {
         var current = await fetch('/api/champion', { cache:'no-store' });
-        if (current.ok) {
-          var currentData = await current.json();
-          if (currentData.predictions.length >= currentData.total) {
-            render(currentData.predictions);
-            return;
-          }
-        }
-        var generated = await fetch('/api/champion/generate', { method:'POST' });
-        if (!generated.ok) throw new Error('HTTP ' + generated.status);
-        var data = await generated.json();
-        if (data.predictions.length >= data.total) {
-          render(data.predictions);
-          return;
-        }
-        retry();
+        if (!current.ok) throw new Error('HTTP ' + current.status);
+        var data = await current.json();
+        if (data.predictions.length) render(data.predictions);
+        else area.innerHTML = '<div class="archive-note">Archived data incomplete: no saved champion forecasts are available.</div>';
       } catch (error) {
-        area.innerHTML = '<div class="error-box">Could not complete all champion predictions. Retrying automatically...</div>';
-        retry();
+        area.innerHTML = '<div class="error-box">Could not load the archived champion forecasts.</div>';
       }
     }
+    load();
+  })();
+  </script>
+</body>
+</html>`;
+}
+
+function renderFinalPage() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Var Council — Final Event Forecasts</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+    :root {
+      --bg:#0F172A; --surface:#1E293B; --surface-2:#273549; --border:#334155;
+      --accent:#38BDF8; --accent-dim:rgba(56,189,248,.15); --text:#F1F5F9;
+      --text-muted:#94A3B8; --purple:#A78BFA; --radius:10px;
+    }
+    body { background:var(--bg); color:var(--text); font-family:'Space Grotesk',system-ui,sans-serif; min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:48px 20px 80px; }
+    .site-header { width:100%; max-width:740px; margin-bottom:48px; display:flex; flex-direction:column; gap:6px; }
+    .site-header .eyebrow { font-family:'Space Mono',monospace; font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); }
+    .site-header h1 { font-size:clamp(28px,5vw,42px); font-weight:700; line-height:1.1; letter-spacing:-.02em; }
+    .site-header h1 em { font-style:normal; color:var(--accent); }
+    .site-header .subtitle { font-size:14px; color:var(--text-muted); margin-top:4px; }
+    .page-nav { width:100%; max-width:740px; margin-bottom:24px; display:flex; gap:8px; flex-wrap:wrap; }
+    .page-nav a { display:inline-flex; align-items:center; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); text-decoration:none; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; transition:background .15s; }
+    .page-nav a:hover { background:var(--accent-dim); }
+    .page-nav a.active { background:var(--accent); color:#0F172A; }
+    .final-back-nav { width:100%; max-width:740px; margin-top:-10px; margin-bottom:24px; }
+    .final-back-nav a { color:var(--accent); font-family:'Space Mono',monospace; font-size:12px; font-weight:700; text-decoration:none; }
+    .final-back-nav a:hover { text-decoration:underline; }
+    main { width:100%; max-width:740px; }
+    .spinner-wrap, .placeholder-msg, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
+    .placeholder-msg { border-style:dashed; color:var(--text-muted); font-size:14px; }
+    .placeholder-msg strong { display:block; color:var(--text); font-size:16px; margin-bottom:6px; }
+    .error-box { color:#FCA5A5; font-size:14px; }
+    .spinner { display:inline-block; width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:16px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner-msg { color:var(--text-muted); font-size:14px; }
+    .final-match { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:16px; margin-bottom:16px; }
+    .final-team { font-size:16px; font-weight:600; min-width:0; display:flex; align-items:center; gap:8px; }
+    .final-team.away { justify-content:flex-end; text-align:right; }
+    .final-team-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .final-team-flag { width:24px; height:18px; object-fit:cover; flex-shrink:0; border-radius:2px; }
+    .final-meta { text-align:center; font-family:'Space Mono',monospace; font-size:11px; color:var(--text-muted); white-space:nowrap; }
+    .final-vs { display:block; color:var(--text); font-size:13px; font-weight:700; margin-bottom:3px; }
+    .generation-note { color:var(--text-muted); font-size:12px; margin:0 2px 18px; }
+    .question-list { display:flex; flex-direction:column; gap:14px; }
+    .question-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px 16px; }
+    .question-title { font-size:15px; font-weight:600; line-height:1.4; }
+    .question-scope { color:var(--text-muted); font-family:'Space Mono',monospace; font-size:10px; margin-top:3px; }
+    .vote-bar-container { position:relative; margin-top:14px; }
+    .vote-bar { display:flex; height:44px; border-radius:6px; overflow:hidden; gap:2px; background:rgba(148,163,184,.12); }
+    .vb-seg { display:flex; align-items:center; justify-content:center; font-family:'Space Mono',monospace; font-size:16px; font-weight:700; color:#fff; cursor:pointer; min-width:30px; }
+    .vb-home { background:#38BDF8; }
+    .vb-draw { background:#64748B; }
+    .vb-away { background:#A78BFA; }
+    .vote-bar-legend { display:flex; gap:16px; margin-top:11px; font-size:12px; color:var(--text-muted); justify-content:center; flex-wrap:wrap; }
+    .vbl-dot { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+    .vbl-dot.home { background:#38BDF8; }
+    .vbl-dot.draw { background:#64748B; }
+    .vbl-dot.away { background:#A78BFA; }
+    .vb-tooltip { display:none; position:absolute; bottom:calc(100% + 8px); background:#0F172A; border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:12px; color:var(--text); white-space:nowrap; z-index:100; pointer-events:none; transform:translateX(-50%); }
+    .vb-tooltip.active { display:block; }
+    .vb-tooltip ul { margin:0; padding:0; list-style:none; }
+    .vb-tooltip li { display:flex; align-items:center; gap:6px; padding:2px 0; }
+    .model-icon { width:16px; height:16px; flex-shrink:0; }
+    @media (max-width:600px) {
+      body { padding:28px 14px 60px; }
+      .site-header { margin-bottom:32px; }
+      .final-match { padding:16px 14px; gap:9px; }
+      .final-team { font-size:14px; }
+      .final-meta { font-size:10px; }
+      .question-card { padding:16px 14px 14px; }
+      .question-title { font-size:14px; }
+      .vote-bar-legend { gap:10px; justify-content:flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <p class="eyebrow">THE VAR COUNCIL</p>
+    ${renderPageTitle('Final Event Forecasts')}
+    <p class="subtitle">Eight independent models forecast ten event markets for the World Cup final.</p>
+  </header>
+  <nav class="page-nav">
+    <a href="/">Predictions</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/tables">Tables</a>
+    <a href="/knockout">Knockout</a>
+    <a href="/champion">Champion</a>
+  </nav>
+  <div class="final-back-nav"><a id="final-back-link" href="/">← Back to Predictions</a></div>
+  <main id="final-area">
+    <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Loading the final forecast...</p></div>
+  </main>
+  <script>
+  (function () {
+    var area = document.getElementById('final-area');
+    var TEAM_FLAGS = ${JSON.stringify(TEAM_FLAGS).replace(/<\//g, '<\\/')};
+    var ICONS = {
+      minimax:'minimax-color.svg', glm:'zai.svg', kimi:'kimi-color.svg',
+      qwen:'qwen-color.svg', deepseek:'deepseek-color.svg',
+      claude:'claude-color.svg', gemini:'google-color.svg', gpt:'openai.svg'
+    };
+
+    function esc(value) {
+      return String(value == null ? '' : value).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function icon(name) {
+      var lower = String(name || '').toLowerCase();
+      for (var prefix in ICONS) {
+        if (lower.indexOf(prefix) === 0) return '<img class="model-icon" src="/icons/' + ICONS[prefix] + '" alt="">';
+      }
+      return '';
+    }
+    function formatKickoff(value) {
+      if (!value) return 'Kickoff TBD';
+      var parts = value.split(' ');
+      return parts.length === 2 ? esc(parts[0]) + '<br>' + esc(parts[1]) + ' ICT' : esc(value);
+    }
+    function teamTitle(name, flagLast) {
+      var label = name || 'TBD';
+      var code = TEAM_FLAGS[label];
+      var flag = code
+        ? '<img class="final-team-flag" src="https://flagcdn.com/w40/' + esc(code) + '.png" alt="' + esc(label) + ' flag">'
+        : '';
+      var teamName = '<span class="final-team-name">' + esc(label) + '</span>';
+      return flagLast ? teamName + flag : flag + teamName;
+    }
+    function matchCard(match) {
+      return '<section class="final-match"><div class="final-team">' + teamTitle(match.home_team) + '</div>' +
+        '<div class="final-meta"><span class="final-vs">vs</span>' + formatKickoff(match.local_date_ict) + '</div>' +
+        '<div class="final-team away">' + teamTitle(match.away_team, true) + '</div></section>';
+    }
+    function updateBackLink(match) {
+      var link = document.getElementById('final-back-link');
+      if (match && match.id != null) {
+        link.href = '/?match=' + encodeURIComponent(match.id);
+        link.textContent = '← Back to Final match predictions';
+      } else {
+        link.href = '/';
+        link.textContent = '← Back to Predictions';
+      }
+    }
+    function optionsFor(question, match) {
+      var home = { value:'home', label:match.home_team, cls:'home' };
+      var away = { value:'away', label:match.away_team, cls:'away' };
+      if (question.kind === 'team_goal') return [home, away];
+      if (question.kind === 'team_cards') return [home, { value:'tie', label:'Tie', cls:'draw' }, away];
+      if (question.kind === 'team_corner') return [home, { value:'none', label:'No corners', cls:'draw' }, away];
+      if (question.kind === 'yes_no') return [
+        { value:'yes', label:'Yes', cls:'home' }, { value:'no', label:'No', cls:'draw' }
+      ];
+      if (question.kind === 'cards_total') return [
+        { value:'over_4_5', label:'Over 4.5', cls:'home' }, { value:'under_4_5', label:'Under 4.5', cls:'draw' }
+      ];
+      return [
+        { value:'over_6_5', label:'Over 6.5', cls:'home' }, { value:'under_6_5', label:'Under 6.5', cls:'draw' }
+      ];
+    }
+
+    var QUESTIONS = [
+      { key:'opening_goal_team', title:'Which team will score first?', scope:'Full match — includes extra time and successful penalty-shootout kicks', kind:'team_goal' },
+      { key:'closing_goal_team', title:'Which team will score last?', scope:'Full match — includes extra time and successful penalty-shootout kicks', kind:'team_goal' },
+      { key:'own_goal', title:'Will there be an own goal?', scope:'Regulation + stoppage time', kind:'yes_no' },
+      { key:'penalty_goal', title:'Will a penalty kick be scored?', scope:'Regulation + stoppage time', kind:'yes_no' },
+      { key:'both_teams_score_90', title:'Will both teams score?', scope:'90 minutes only — excludes stoppage time', kind:'yes_no' },
+      { key:'total_player_cards', title:'Total player yellow and red cards', scope:'Regulation + stoppage time', kind:'cards_total' },
+      { key:'most_player_cards', title:'Which team will receive more player cards?', scope:'Regulation + stoppage time', kind:'team_cards' },
+      { key:'team_official_card_90', title:'Will any team official receive a card?', scope:'90 minutes only — excludes stoppage time', kind:'yes_no' },
+      { key:'total_corners', title:'Total corners', scope:'Regulation + stoppage time', kind:'corners_total' },
+      { key:'last_corner_team', title:'Which team will take the final corner?', scope:'Regulation + stoppage time', kind:'team_corner' }
+    ];
+
+    function chart(question, predictions, match) {
+      var options = optionsFor(question, match);
+      var counts = {};
+      var voters = {};
+      options.forEach(function (option) { counts[option.value] = 0; voters[option.value] = []; });
+      predictions.forEach(function (prediction) {
+        var value = prediction[question.key];
+        if (counts.hasOwnProperty(value)) {
+          counts[value]++;
+          voters[value].push(prediction.model_name);
+        }
+      });
+      function segment(option) {
+        var count = counts[option.value];
+        if (!count) return '';
+        return '<div class="vb-seg vb-' + option.cls + '" style="flex:' + count + '" data-voters="' +
+          esc(JSON.stringify(voters[option.value])) + '" aria-label="' + esc(option.label + ': ' + count) + '">' + count + '</div>';
+      }
+      var legend = options.map(function (option) {
+        return '<span><span class="vbl-dot ' + option.cls + '"></span>' + esc(option.label) + '</span>';
+      }).join('');
+      return '<section class="question-card"><h2 class="question-title">' + esc(question.title) + '</h2>' +
+        '<p class="question-scope">' + esc(question.scope) + '</p><div class="vote-bar-container">' +
+        '<div class="vote-bar">' + options.map(segment).join('') + '</div><div class="vb-tooltip"></div></div>' +
+        '<div class="vote-bar-legend">' + legend + '</div></section>';
+    }
+    function render(data) {
+      var count = data.predictions.length;
+      var note = count + '/' + data.total + ' models locked';
+      if (data.status === 'locked_partial') note += ' before kickoff; no further forecasts can be added.';
+      else if (count < data.total) note += '. Archived data is incomplete; no further forecasts will be generated.';
+      area.innerHTML = matchCard(data.match) + '<p class="generation-note">' + esc(note) + '</p>' +
+        '<div class="question-list">' + QUESTIONS.map(function (question) {
+          return chart(question, data.predictions, data.match);
+        }).join('') + '</div>';
+    }
+    function placeholder(data) {
+      var title = 'Final forecast unavailable';
+      var message = 'No final match is scheduled yet.';
+      if (data.status === 'waiting_for_teams') {
+        title = 'Waiting for the finalists';
+        message = 'Forecasting starts after both teams in the final are confirmed.';
+      } else if (data.status === 'waiting_for_schedule') {
+        title = 'Waiting for kickoff details';
+        message = 'Forecasting starts after the final has a confirmed kickoff time.';
+      } else if (data.status === 'locked_empty') {
+        title = 'No pre-match forecast';
+        message = 'Kickoff has passed, so the council will not generate predictions after the match begins.';
+      } else if (data.status === 'ready') {
+        title = 'Archived forecast unavailable';
+        message = 'No saved final forecasts are available; archive mode will not generate new ones.';
+      }
+      area.innerHTML = (data.match ? matchCard(data.match) : '') + '<div class="placeholder-msg"><strong>' +
+        esc(title) + '</strong>' + esc(message) + '</div>';
+    }
+    async function load() {
+      try {
+        var response = await fetch('/api/final', { cache:'no-store' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        var data = await response.json();
+        updateBackLink(data.match);
+        if (data.predictions.length) render(data); else placeholder(data);
+      } catch (error) {
+        area.innerHTML = '<div class="error-box">Could not load the archived final forecast.</div>';
+      }
+    }
+
+    var isTouch = false;
+    document.addEventListener('touchstart', function () { isTouch = true; }, { once:true });
+    function hideTooltips() {
+      area.querySelectorAll('.vb-tooltip.active').forEach(function (tooltip) { tooltip.classList.remove('active'); });
+    }
+    function showTooltip(segment) {
+      var container = segment.closest('.vote-bar-container');
+      var tooltip = container.querySelector('.vb-tooltip');
+      var names = JSON.parse(segment.getAttribute('data-voters') || '[]');
+      tooltip.innerHTML = '<ul>' + names.map(function (name) {
+        return '<li>' + icon(name) + esc(name) + '</li>';
+      }).join('') + '</ul>';
+      var containerRect = container.getBoundingClientRect();
+      var segmentRect = segment.getBoundingClientRect();
+      tooltip.style.left = (segmentRect.left + segmentRect.width / 2 - containerRect.left) + 'px';
+      tooltip.classList.add('active');
+    }
+    area.addEventListener('mouseover', function (event) {
+      if (isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (segment) showTooltip(segment);
+    });
+    area.addEventListener('mouseout', function (event) {
+      if (isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (segment && !segment.contains(event.relatedTarget)) hideTooltips();
+    });
+    area.addEventListener('click', function (event) {
+      if (!isTouch) return;
+      var segment = event.target.closest('.vb-seg');
+      if (!segment) return hideTooltips();
+      var tooltip = segment.closest('.vote-bar-container').querySelector('.vb-tooltip');
+      var active = tooltip.classList.contains('active');
+      hideTooltips();
+      if (!active) showTooltip(segment);
+    });
+    area.addEventListener('error', function (event) {
+      if (event.target.classList && event.target.classList.contains('final-team-flag')) {
+        event.target.style.display = 'none';
+      }
+    }, true);
     load();
   })();
   </script>
@@ -2773,6 +3139,21 @@ app.get('/champion', (_req, res) => {
   res.send(renderChampionPage());
 });
 
+app.get('/final', (_req, res) => {
+  res.send(renderFinalPage());
+});
+
+app.get('/api/final', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const archive = await readFinalPredictions();
+    res.json({ ...archive, can_generate: false });
+  } catch (err) {
+    console.error('Final prediction DB error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.get('/api/champion', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   try {
@@ -2783,57 +3164,14 @@ app.get('/api/champion', async (_req, res) => {
   }
 });
 
-let championInFlight = null;
+function archiveOnly(_req, res) {
+  res.status(410).json({
+    error: 'Prediction generation is disabled because the World Cup 2026 archive is read-only',
+  });
+}
 
-app.post('/api/champion/generate', async (_req, res) => {
-  try {
-    if (!championInFlight) {
-      championInFlight = getChampionPredictions().finally(() => {
-        championInFlight = null;
-      });
-    }
-    res.json(await championInFlight);
-  } catch (err) {
-    console.error('Champion prediction error:', err);
-    res.status(422).json({ error: err.message });
-  }
-});
-
-const inFlight = new Map();
-
-app.post('/api/predict/:matchId', async (req, res) => {
-  const matchId = parseInt(req.params.matchId, 10);
-  if (isNaN(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
-
-  // Fetch match metadata first — validates existence, guards against unconfirmed
-  // knockout teams, and avoids a second DB round-trip after expensive LLM calls.
-  let match;
-  try {
-    const r = await db.execute({
-      sql: 'SELECT id, type, home_team_id, away_team_id, finished, home_score, away_score FROM matches WHERE id = ?',
-      args: [matchId],
-    });
-    if (!r.rows.length) return res.status(404).json({ error: 'Match not found' });
-    match = r.rows[0];
-  } catch (err) {
-    console.error('DB error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-
-  if (match.home_team_id === '0' || match.away_team_id === '0') {
-    return res.status(422).json({ error: 'Cannot predict for a match with unconfirmed teams' });
-  }
-
-  try {
-    if (!inFlight.has(matchId)) {
-      inFlight.set(matchId, getPredictions(matchId).finally(() => inFlight.delete(matchId)));
-    }
-    const raw = await inFlight.get(matchId);
-    res.json({ predictions: raw, match });
-  } catch (err) {
-    console.error('Prediction error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+app.post('/api/final/generate', archiveOnly);
+app.post('/api/champion/generate', archiveOnly);
+app.post('/api/predict/:matchId', archiveOnly);
 
 module.exports = app;
