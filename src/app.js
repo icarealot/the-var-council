@@ -2,9 +2,8 @@ const path = require('path');
 const express = require('express');
 const db = require('./db');
 const sync = require('./sync');
-const { getPredictions } = require('./predict');
-const { getChampionPredictions, readChampionPredictions } = require('./champion');
-const { getFinalPredictions, readFinalPredictions } = require('./final');
+const { readChampionPredictions } = require('./champion');
+const { readFinalPredictions } = require('./final');
 const changelog = require('./changelog.json');
 
 const app = express();
@@ -1047,28 +1046,22 @@ function renderPage({ matches, syncError, initialMatchId = null }) {
 
       try {
         var r = await fetch('/api/predictions/' + matchId);
-        if (r.ok) {
-          var data = await r.json();
-          if (data.predictions && data.predictions.length >= 8) {
-            if (activeMatchId !== String(matchId)) return;
-            area.innerHTML = renderBubbles(data.predictions, data.match, home, away);
-            return;
-          }
-        }
-      } catch (_) {}
-
-      showSpinner(true);
-
-      try {
-        var r2 = await fetch('/api/predict/' + matchId, { method: 'POST' });
-        if (!r2.ok) throw new Error('HTTP ' + r2.status);
-        var data2 = await r2.json();
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var data = await r.json();
         if (activeMatchId !== String(matchId)) return;
-        area.innerHTML = renderBubbles(data2.predictions, data2.match, home, away);
+        var predictions = data.predictions || [];
+        if (!predictions.length) {
+          area.innerHTML = '<div class="placeholder-msg"><strong>Archived data incomplete</strong>No saved predictions are available for this match.</div>';
+          return;
+        }
+        var notice = predictions.length < 8
+          ? '<div class="placeholder-msg"><strong>Archived data incomplete</strong>Showing ' + predictions.length + ' of 8 saved predictions.</div>'
+          : '';
+        area.innerHTML = notice + renderBubbles(predictions, data.match, home, away);
       } catch (err) {
         if (activeMatchId !== String(matchId)) return;
         area.innerHTML =
-          '<div class="placeholder-msg"><strong>Error</strong>Could not load predictions. Please try again.</div>';
+          '<div class="placeholder-msg"><strong>Error</strong>Could not load the archived predictions.</div>';
       }
     }
 
@@ -1533,7 +1526,7 @@ app.get('/api/predictions/:matchId', async (req, res) => {
       db.execute({ sql: 'SELECT * FROM predictions WHERE match_id = ? ORDER BY order_index ASC', args: [matchId] }),
       db.execute({ sql: 'SELECT id, type, finished, home_score, away_score FROM matches WHERE id = ?', args: [matchId] }),
     ]);
-    if (!predResult.rows.length) return res.status(404).json({ error: 'No predictions found' });
+    if (!matchResult.rows.length) return res.status(404).json({ error: 'Match not found' });
     res.json({ predictions: predResult.rows, match: matchResult.rows[0] || null });
   } catch (err) {
     console.error('DB error:', err);
@@ -2614,10 +2607,11 @@ function renderChampionPage() {
     .page-nav a:hover { background:var(--accent-dim); }
     .page-nav a.active { background:var(--accent); color:#0F172A; }
     main { width:100%; max-width:740px; }
-    .spinner-wrap, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
+    .spinner-wrap, .error-box, .archive-note { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
     .spinner { display:inline-block; width:32px; height:32px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:16px; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .spinner-msg, .error-box { color:var(--text-muted); font-size:14px; }
+    .spinner-msg, .error-box, .archive-note { color:var(--text-muted); font-size:14px; }
+    .archive-note { padding:16px; margin-bottom:16px; border-style:dashed; }
     .consensus { display:grid; grid-template-columns:1fr; gap:16px; margin-bottom:24px; }
     .chart-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px; }
     .chart-title { font-family:'Space Mono',monospace; font-size:12px; font-weight:700; color:var(--text); margin-bottom:14px; text-transform:uppercase; letter-spacing:.06em; }
@@ -2719,6 +2713,9 @@ function renderChampionPage() {
         }).join('') + '</div></section>';
     }
     function render(predictions) {
+      var archiveNote = predictions.length < 8
+        ? '<div class="archive-note">Archived data incomplete: showing ' + predictions.length + ' of 8 saved forecasts.</div>'
+        : '';
       var bubbles = predictions.map(function (prediction, index) {
         return '<div class="chat-row ' + (index % 2 === 0 ? 'left' : 'right') + '">' +
           '<div class="chat-sender">' + icon(prediction.model_name) + esc(prediction.model_name) + '</div>' +
@@ -2728,35 +2725,20 @@ function renderChampionPage() {
           team(prediction.champion) + '</div><span class="bubble-reason">' +
           esc(prediction.reasoning) + '</span></div></div>';
       }).join('');
-      area.innerHTML = '<div class="consensus">' +
+      area.innerHTML = archiveNote + '<div class="consensus">' +
         chart(predictions, 'champion', 'Champion votes', '') +
         chart(predictions, 'finalists', 'Finalist picks', 'finalist-chart') +
         '</div><div class="chat-feed">' + bubbles + '</div>';
     }
-    function retry() {
-      window.setTimeout(load, 5000);
-    }
     async function load() {
       try {
         var current = await fetch('/api/champion', { cache:'no-store' });
-        if (current.ok) {
-          var currentData = await current.json();
-          if (currentData.predictions.length >= currentData.total) {
-            render(currentData.predictions);
-            return;
-          }
-        }
-        var generated = await fetch('/api/champion/generate', { method:'POST' });
-        if (!generated.ok) throw new Error('HTTP ' + generated.status);
-        var data = await generated.json();
-        if (data.predictions.length >= data.total) {
-          render(data.predictions);
-          return;
-        }
-        retry();
+        if (!current.ok) throw new Error('HTTP ' + current.status);
+        var data = await current.json();
+        if (data.predictions.length) render(data.predictions);
+        else area.innerHTML = '<div class="archive-note">Archived data incomplete: no saved champion forecasts are available.</div>';
       } catch (error) {
-        area.innerHTML = '<div class="error-box">Could not complete all champion predictions. Retrying automatically...</div>';
-        retry();
+        area.innerHTML = '<div class="error-box">Could not load the archived champion forecasts.</div>';
       }
     }
     load();
@@ -2865,8 +2847,6 @@ function renderFinalPage() {
   <script>
   (function () {
     var area = document.getElementById('final-area');
-    var generationRunning = false;
-    var pollTimer = null;
     var TEAM_FLAGS = ${JSON.stringify(TEAM_FLAGS).replace(/<\//g, '<\\/')};
     var ICONS = {
       minimax:'minimax-color.svg', glm:'zai.svg', kimi:'kimi-color.svg',
@@ -2974,7 +2954,7 @@ function renderFinalPage() {
       var count = data.predictions.length;
       var note = count + '/' + data.total + ' models locked';
       if (data.status === 'locked_partial') note += ' before kickoff; no further forecasts can be added.';
-      else if (count < data.total) note += '. Remaining models are retrying automatically.';
+      else if (count < data.total) note += '. Archived data is incomplete; no further forecasts will be generated.';
       area.innerHTML = matchCard(data.match) + '<p class="generation-note">' + esc(note) + '</p>' +
         '<div class="question-list">' + QUESTIONS.map(function (question) {
           return chart(question, data.predictions, data.match);
@@ -2993,22 +2973,11 @@ function renderFinalPage() {
         title = 'No pre-match forecast';
         message = 'Kickoff has passed, so the council will not generate predictions after the match begins.';
       } else if (data.status === 'ready') {
-        return area.innerHTML = matchCard(data.match) + '<div class="spinner-wrap"><div class="spinner"></div>' +
-          '<p class="spinner-msg">Models are forecasting the final. Charts will appear as answers are locked...</p></div>';
+        title = 'Archived forecast unavailable';
+        message = 'No saved final forecasts are available; archive mode will not generate new ones.';
       }
       area.innerHTML = (data.match ? matchCard(data.match) : '') + '<div class="placeholder-msg"><strong>' +
         esc(title) + '</strong>' + esc(message) + '</div>';
-    }
-    function schedulePoll() {
-      window.clearTimeout(pollTimer);
-      pollTimer = window.setTimeout(load, 4000);
-    }
-    function triggerGeneration() {
-      if (generationRunning) return;
-      generationRunning = true;
-      fetch('/api/final/generate', { method:'POST' })
-        .catch(function () {})
-        .finally(function () { generationRunning = false; load(); });
     }
     async function load() {
       try {
@@ -3017,13 +2986,8 @@ function renderFinalPage() {
         var data = await response.json();
         updateBackLink(data.match);
         if (data.predictions.length) render(data); else placeholder(data);
-        if (data.can_generate) {
-          triggerGeneration();
-          schedulePoll();
-        }
       } catch (error) {
-        area.innerHTML = '<div class="error-box">Could not load the final forecast. Retrying automatically...</div>';
-        schedulePoll();
+        area.innerHTML = '<div class="error-box">Could not load the archived final forecast.</div>';
       }
     }
 
@@ -3182,29 +3146,11 @@ app.get('/final', (_req, res) => {
 app.get('/api/final', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   try {
-    res.json(await readFinalPredictions());
+    const archive = await readFinalPredictions();
+    res.json({ ...archive, can_generate: false });
   } catch (err) {
     console.error('Final prediction DB error:', err);
     res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-let finalInFlight = null;
-
-app.post('/api/final/generate', async (_req, res) => {
-  try {
-    if (!finalInFlight) {
-      console.log('[final] generation request accepted');
-      finalInFlight = getFinalPredictions().finally(() => {
-        finalInFlight = null;
-      });
-    } else {
-      console.log('[final] generation request joined existing pass');
-    }
-    res.json(await finalInFlight);
-  } catch (err) {
-    console.error('Final prediction error:', err);
-    res.status(422).json({ error: err.message });
   }
 });
 
@@ -3218,57 +3164,14 @@ app.get('/api/champion', async (_req, res) => {
   }
 });
 
-let championInFlight = null;
+function archiveOnly(_req, res) {
+  res.status(410).json({
+    error: 'Prediction generation is disabled because the World Cup 2026 archive is read-only',
+  });
+}
 
-app.post('/api/champion/generate', async (_req, res) => {
-  try {
-    if (!championInFlight) {
-      championInFlight = getChampionPredictions().finally(() => {
-        championInFlight = null;
-      });
-    }
-    res.json(await championInFlight);
-  } catch (err) {
-    console.error('Champion prediction error:', err);
-    res.status(422).json({ error: err.message });
-  }
-});
-
-const inFlight = new Map();
-
-app.post('/api/predict/:matchId', async (req, res) => {
-  const matchId = parseInt(req.params.matchId, 10);
-  if (isNaN(matchId)) return res.status(400).json({ error: 'Invalid matchId' });
-
-  // Fetch match metadata first — validates existence, guards against unconfirmed
-  // knockout teams, and avoids a second DB round-trip after expensive LLM calls.
-  let match;
-  try {
-    const r = await db.execute({
-      sql: 'SELECT id, type, home_team_id, away_team_id, finished, home_score, away_score FROM matches WHERE id = ?',
-      args: [matchId],
-    });
-    if (!r.rows.length) return res.status(404).json({ error: 'Match not found' });
-    match = r.rows[0];
-  } catch (err) {
-    console.error('DB error:', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-
-  if (match.home_team_id === '0' || match.away_team_id === '0') {
-    return res.status(422).json({ error: 'Cannot predict for a match with unconfirmed teams' });
-  }
-
-  try {
-    if (!inFlight.has(matchId)) {
-      inFlight.set(matchId, getPredictions(matchId).finally(() => inFlight.delete(matchId)));
-    }
-    const raw = await inFlight.get(matchId);
-    res.json({ predictions: raw, match });
-  } catch (err) {
-    console.error('Prediction error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
+app.post('/api/final/generate', archiveOnly);
+app.post('/api/champion/generate', archiveOnly);
+app.post('/api/predict/:matchId', archiveOnly);
 
 module.exports = app;
