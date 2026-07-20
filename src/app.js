@@ -106,7 +106,7 @@ function renderPageTitle(title, changelogActive = false) {
   </div>`;
 }
 
-function renderPage({ matches, syncError }) {
+function renderPage({ matches, syncError, initialMatchId = null }) {
   const confirmed = matches.filter((m) => !isUnconfirmed(m));
 
   const byDate = new Map();
@@ -129,6 +129,7 @@ function renderPage({ matches, syncError }) {
           const timePart = m.local_date_ict ? m.local_date_ict.split(' ')[1] : null;
           return {
             id: m.id,
+            type: m.type,
             home,
             away,
             homeFlag: TEAM_FLAGS[home] ? flagImg(TEAM_FLAGS[home]) : '',
@@ -305,10 +306,35 @@ function renderPage({ matches, syncError }) {
 
     .predictions-nav {
       display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .predictions-nav-row {
+      display: flex;
       align-items: center;
       gap: 16px;
     }
-    .predictions-nav .match-card { flex: 1; cursor: default; pointer-events: none; }
+    .predictions-nav-row .match-card { flex: 1; cursor: default; pointer-events: none; }
+
+    .final-forecast-btn {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      color: var(--accent);
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .final-forecast-btn:hover { background: var(--accent-dim); }
 
     .match-card-time {
       font-family: 'Space Mono', monospace;
@@ -763,7 +789,6 @@ function renderPage({ matches, syncError }) {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -776,6 +801,7 @@ function renderPage({ matches, syncError }) {
   <script>
   (function () {
     var MATCH_DATA = ${JSON.stringify(matchData).replace(/<\//g, '<\\/')};
+    var INITIAL_MATCH_ID = ${JSON.stringify(initialMatchId == null ? '' : String(initialMatchId))};
 
     var navArea   = document.getElementById('nav-area');
     var matchArea = document.getElementById('match-area');
@@ -1070,7 +1096,7 @@ function renderPage({ matches, syncError }) {
         var m = group.matches[i];
         var selected = String(m.id) === String(activeMatchId) ? ' selected' : '';
         var scoreStr = m.finished ? (m.homeScore + '–' + m.awayScore) : 'vs';
-        html += '<button class="match-card' + selected + '" data-id="' + m.id + '" data-home="' + esc(m.home) + '" data-away="' + esc(m.away) + '">' +
+        html += '<button class="match-card' + selected + '" data-id="' + m.id + '" data-type="' + esc(m.type || '') + '" data-home="' + esc(m.home) + '" data-away="' + esc(m.away) + '">' +
           '<span class="match-card-time">' + esc(m.time) + '</span>' +
           '<span class="match-card-home">' + m.homeFlag + ' ' + esc(m.home) + '</span>' +
           '<span class="match-card-score">' + esc(scoreStr) + '</span>' +
@@ -1083,7 +1109,7 @@ function renderPage({ matches, syncError }) {
     function attachCardListeners(group) {
       matchArea.querySelectorAll('.match-card').forEach(function (card) {
         card.addEventListener('click', function () {
-          gotoPredictions(card.dataset.id, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel, card.innerHTML);
+          gotoPredictions(card.dataset.id, card.dataset.type, card.dataset.home, card.dataset.away, group.datePart, group.shortLabel, card.innerHTML);
         });
       });
     }
@@ -1110,12 +1136,17 @@ function renderPage({ matches, syncError }) {
       hint.style.display = '';
     }
 
-    function gotoPredictions(matchId, home, away, datePart, shortLabel, cardHTML) {
+    function gotoPredictions(matchId, matchType, home, away, datePart, shortLabel, cardHTML) {
       activeMatchId = String(matchId);
       navArea.innerHTML =
         '<div class="predictions-nav">' +
-          '<button class="back-btn">← ' + esc(shortLabel) + '</button>' +
-          '<div class="match-card">' + cardHTML + '</div>' +
+          '<div class="predictions-nav-row">' +
+            '<button class="back-btn">← ' + esc(shortLabel) + '</button>' +
+            '<div class="match-card">' + cardHTML + '</div>' +
+          '</div>' +
+          (matchType === 'final'
+            ? '<a class="final-forecast-btn" href="/final">View final event forecasts <span aria-hidden="true">→</span></a>'
+            : '') +
         '</div>';
       navArea.querySelector('.back-btn').addEventListener('click', function () {
         activeMatchId = null;
@@ -1193,6 +1224,25 @@ function renderPage({ matches, syncError }) {
     navArea.innerHTML = renderDateStrip();
     attachChipListeners();
 
+    if (INITIAL_MATCH_ID) {
+      for (var mi = 0; mi < MATCH_DATA.length; mi++) {
+        var initialGroup = MATCH_DATA[mi];
+        for (var mj = 0; mj < initialGroup.matches.length; mj++) {
+          if (String(initialGroup.matches[mj].id) !== INITIAL_MATCH_ID) continue;
+          showMatchCards(initialGroup.datePart);
+          var initialCards = matchArea.querySelectorAll('.match-card');
+          for (var mk = 0; mk < initialCards.length; mk++) {
+            if (initialCards[mk].dataset.id === INITIAL_MATCH_ID) {
+              initialCards[mk].click();
+              break;
+            }
+          }
+          break;
+        }
+        if (activeMatchId) break;
+      }
+    }
+
     // Auto-select today in ICT (UTC+7), or nearest upcoming date
     var nowICT   = new Date(Date.now() + 7 * 60 * 60 * 1000);
     var todayStr = nowICT.toISOString().slice(0, 10);
@@ -1205,7 +1255,7 @@ function renderPage({ matches, syncError }) {
         if (MATCH_DATA[aj].datePart > todayStr) { autoDate = MATCH_DATA[aj].datePart; break; }
       }
     }
-    if (autoDate) showMatchCards(autoDate);
+    if (!activeMatchId && autoDate) showMatchCards(autoDate);
   })();
   </script>
 </body>
@@ -1409,8 +1459,15 @@ app.get('/api/ready', async (_req, res) => {
 });
 
 app.get('/', async (req, res) => {
+  const initialMatchId = typeof req.query.match === 'string' && /^\d+$/.test(req.query.match)
+    ? req.query.match
+    : null;
+
   if (!req.query.ready) {
-    return res.redirect('/loading?next=' + encodeURIComponent('/?ready=1'));
+    const next = initialMatchId
+      ? `/?ready=1&match=${encodeURIComponent(initialMatchId)}`
+      : '/?ready=1';
+    return res.redirect('/loading?next=' + encodeURIComponent(next));
   }
 
   let syncError = null;
@@ -1420,13 +1477,14 @@ app.get('/', async (req, res) => {
       'SELECT * FROM matches ORDER BY local_date_ict ASC'
     );
     const matches = result.rows;
-    res.send(renderPage({ matches, syncError }));
+    res.send(renderPage({ matches, syncError, initialMatchId }));
   } catch (err) {
     console.error('DB query failed:', err);
     res.status(500).send(
       renderPage({
         matches: [],
         syncError: err.message,
+        initialMatchId,
       })
     );
   }
@@ -1751,7 +1809,6 @@ function renderLeaderboardPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2226,7 +2283,6 @@ function renderTablesPage(groups) {
     <a href="/tables" class="active">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final">Final</a>
   </nav>
 
   <main style="width:100%;max-width:740px;">
@@ -2477,7 +2533,6 @@ function renderKnockoutPage(matches) {
     <a href="/tables">Tables</a>
     <a href="/knockout" class="active">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final">Final</a>
   </nav>
   <main style="width:100%;max-width:740px;">
     ${mainContent}
@@ -2575,7 +2630,6 @@ function renderChampionPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion" class="active">Champion</a>
-    <a href="/final">Final</a>
   </nav>
   <main id="champion-area">
     <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Models are predicting the finalists and champion — this can take a few minutes...</p></div>
@@ -2685,7 +2739,7 @@ function renderFinalPage() {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>The Var Council — Final</title>
+  <title>The Var Council — Final Event Forecasts</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>⚽</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -2707,6 +2761,9 @@ function renderFinalPage() {
     .page-nav a { display:inline-flex; align-items:center; font-family:'Space Mono',monospace; font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--accent); text-decoration:none; padding:8px 14px; border:1px solid var(--accent); border-radius:6px; transition:background .15s; }
     .page-nav a:hover { background:var(--accent-dim); }
     .page-nav a.active { background:var(--accent); color:#0F172A; }
+    .final-back-nav { width:100%; max-width:740px; margin-top:-10px; margin-bottom:24px; }
+    .final-back-nav a { color:var(--accent); font-family:'Space Mono',monospace; font-size:12px; font-weight:700; text-decoration:none; }
+    .final-back-nav a:hover { text-decoration:underline; }
     main { width:100%; max-width:740px; }
     .spinner-wrap, .placeholder-msg, .error-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:48px; text-align:center; }
     .placeholder-msg { border-style:dashed; color:var(--text-muted); font-size:14px; }
@@ -2758,7 +2815,7 @@ function renderFinalPage() {
 <body>
   <header class="site-header">
     <p class="eyebrow">THE VAR COUNCIL</p>
-    ${renderPageTitle('Final')}
+    ${renderPageTitle('Final Event Forecasts')}
     <p class="subtitle">Eight independent models forecast ten event markets for the World Cup final.</p>
   </header>
   <nav class="page-nav">
@@ -2767,8 +2824,8 @@ function renderFinalPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final" class="active">Final</a>
   </nav>
+  <div class="final-back-nav"><a id="final-back-link" href="/">← Back to Predictions</a></div>
   <main id="final-area">
     <div class="spinner-wrap"><div class="spinner"></div><p class="spinner-msg">Loading the final forecast...</p></div>
   </main>
@@ -2813,6 +2870,16 @@ function renderFinalPage() {
       return '<section class="final-match"><div class="final-team">' + teamTitle(match.home_team) + '</div>' +
         '<div class="final-meta"><span class="final-vs">vs</span>' + formatKickoff(match.local_date_ict) + '</div>' +
         '<div class="final-team away">' + teamTitle(match.away_team, true) + '</div></section>';
+    }
+    function updateBackLink(match) {
+      var link = document.getElementById('final-back-link');
+      if (match && match.id != null) {
+        link.href = '/?match=' + encodeURIComponent(match.id);
+        link.textContent = '← Back to Final match predictions';
+      } else {
+        link.href = '/';
+        link.textContent = '← Back to Predictions';
+      }
     }
     function optionsFor(question, match) {
       var home = { value:'home', label:match.home_team, cls:'home' };
@@ -2915,6 +2982,7 @@ function renderFinalPage() {
         var response = await fetch('/api/final', { cache:'no-store' });
         if (!response.ok) throw new Error('HTTP ' + response.status);
         var data = await response.json();
+        updateBackLink(data.match);
         if (data.predictions.length) render(data); else placeholder(data);
         if (data.can_generate) {
           triggerGeneration();
@@ -3048,7 +3116,6 @@ function renderChangelogPage() {
     <a href="/tables">Tables</a>
     <a href="/knockout">Knockout</a>
     <a href="/champion">Champion</a>
-    <a href="/final">Final</a>
   </nav>
   <main>
     <div class="timeline">${timeline}</div>
