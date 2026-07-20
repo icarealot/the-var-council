@@ -1,5 +1,12 @@
 [
   {
+    "date": "2026-07-20",
+    "entries": [
+      "Moved final event forecasts into the Final match flow, with an easy return to the match predictions.",
+      "Made the active match date center reliably in the date picker, including after returning to the page."
+    ]
+  },
+  {
     "date": "2026-07-19",
     "entries": [
       "Added a Final tab with council consensus charts for ten scoring, discipline, and corner questions.",
