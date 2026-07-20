@@ -1089,6 +1089,35 @@ function renderPage({ matches, syncError, initialMatchId = null }) {
       });
     }
 
+    var dateScrollFrame = null;
+
+    function scrollActiveDate(behavior) {
+      if (dateScrollFrame !== null) cancelAnimationFrame(dateScrollFrame);
+
+      // The strip is created dynamically. Wait for the browser to lay it out,
+      // then scroll that container directly so page scroll restoration cannot
+      // cancel or replace the horizontal position.
+      dateScrollFrame = requestAnimationFrame(function () {
+        dateScrollFrame = null;
+        var strip = navArea.querySelector('.date-strip');
+        var chip = strip && strip.querySelector('.date-chip.active');
+        if (!strip || !chip) return;
+
+        var stripRect = strip.getBoundingClientRect();
+        var chipRect = chip.getBoundingClientRect();
+        var centeredLeft = strip.scrollLeft + chipRect.left - stripRect.left -
+          (strip.clientWidth - chipRect.width) / 2;
+        var maxLeft = Math.max(0, strip.scrollWidth - strip.clientWidth);
+        var left = Math.max(0, Math.min(centeredLeft, maxLeft));
+
+        if (behavior === 'smooth') {
+          strip.scrollTo({ left: left, behavior: 'smooth' });
+        } else {
+          strip.scrollLeft = left;
+        }
+      });
+    }
+
     /* ── Match cards ── */
     function renderMatchCards(group) {
       var html = '';
@@ -1115,15 +1144,13 @@ function renderPage({ matches, syncError, initialMatchId = null }) {
     }
 
     /* ── State transitions ── */
-    function showMatchCards(datePart) {
+    function showMatchCards(datePart, scrollBehavior) {
       activeDate = datePart;
-      var activeChip = null;
       navArea.querySelectorAll('.date-chip').forEach(function (chip) {
         var isActive = chip.dataset.date === datePart;
         chip.classList.toggle('active', isActive);
-        if (isActive) activeChip = chip;
       });
-      if (activeChip) activeChip.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      scrollActiveDate(scrollBehavior || 'smooth');
       var group = null;
       for (var i = 0; i < MATCH_DATA.length; i++) {
         if (MATCH_DATA[i].datePart === datePart) { group = MATCH_DATA[i]; break; }
@@ -1229,7 +1256,7 @@ function renderPage({ matches, syncError, initialMatchId = null }) {
         var initialGroup = MATCH_DATA[mi];
         for (var mj = 0; mj < initialGroup.matches.length; mj++) {
           if (String(initialGroup.matches[mj].id) !== INITIAL_MATCH_ID) continue;
-          showMatchCards(initialGroup.datePart);
+          showMatchCards(initialGroup.datePart, 'auto');
           var initialCards = matchArea.querySelectorAll('.match-card');
           for (var mk = 0; mk < initialCards.length; mk++) {
             if (initialCards[mk].dataset.id === INITIAL_MATCH_ID) {
@@ -1255,7 +1282,13 @@ function renderPage({ matches, syncError, initialMatchId = null }) {
         if (MATCH_DATA[aj].datePart > todayStr) { autoDate = MATCH_DATA[aj].datePart; break; }
       }
     }
-    if (!activeMatchId && autoDate) showMatchCards(autoDate);
+    if (!activeMatchId && autoDate) showMatchCards(autoDate, 'auto');
+
+    // Browsers may restore nested scroll positions after the inline script has
+    // run (and again when reviving the page from the back-forward cache).
+    window.addEventListener('pageshow', function () {
+      if (!activeMatchId && activeDate) scrollActiveDate('auto');
+    });
   })();
   </script>
 </body>
