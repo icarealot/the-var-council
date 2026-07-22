@@ -2,6 +2,7 @@
   {
     "date": "2026-07-20",
     "entries": [
+      "Switched to a read-only archive that preserves saved forecasts without generating new predictions.",
       "Moved final event forecasts into the Final match flow, with an easy return to the match predictions.",
       "Made the active match date center reliably in the date picker, including after returning to the page."
     ]
