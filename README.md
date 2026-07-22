@@ -1,5 +1,5 @@
 > [!WARNING]
-> ⚠️ This project is 100% vibe coded. All production code was generated through conversations with AI coding agents; the human provided direction, decisions, and testing. Treat the code as experimental and review it before reuse.
+> This project is 100% vibe coded. All production code was generated through conversations with AI coding agents; the human provided direction, decisions, and testing. Treat the code as experimental and review it before reuse.
 
 # The VAR Council
 
